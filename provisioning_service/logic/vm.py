@@ -1,140 +1,102 @@
 import httpx
-from fastapi import APIRouter, Header
 
-import os
-from dotenv import load_dotenv
 
-from models.nova_models import CreateInstanceLocalStorageRequest, CreateInstanceVolumeStorageRequest
-
-router = APIRouter()
-
-COMPUTE = "http://topcsnova.cloudlab.buet.ac.bd/v2.1"
-
-load_dotenv()
-x_auth_token = os.getenv("openstack_token")
-
-@router.get("/servers")
-async def list_instances():
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{COMPUTE}/servers",
+def get_instances(base_url: str, x_auth_token: str):
+    with httpx.Client() as client:
+        response = client.get(
+            f"{base_url}/servers",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/servers/detail")
-async def list_detailed_instances():
+async def get_detailed_instances(base_url: str, x_auth_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/servers/detail",
+            f"{base_url}/servers/detail",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/servers/{instance_id}")
-async def detailed_instance(instance_id: str):
+async def get_instance(base_url: str, x_auth_token: str, instance_id: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/servers/{instance_id}",
+            f"{base_url}/servers/{instance_id}",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/flavors")
-async def list_flavors():
+async def get_flavors(base_url: str, x_auth_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/flavors",
+            f"{base_url}/flavors",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/flavors/{flavor_id}")
-async def list_detailed_flavor(flavor_id: str):
+async def get_flavor(base_url: str, x_auth_token: str, flavor_id: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/flavors/{flavor_id}",
+            f"{base_url}/flavors/{flavor_id}",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/images")
-async def list_images():
+async def get_images(base_url: str, x_auth_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/images",
+            f"{base_url}/images",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/images/detail")
-async def list_detailed_images():
+async def get_detailed_images(base_url: str, x_auth_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/images/detail",
+            f"{base_url}/images/detail",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/images/{image_id}")
-async def list_detailed_image(image_id: str):
+async def get_image(base_url: str, x_auth_token: str, image_id: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/images/{image_id}",
+            f"{base_url}/images/{image_id}",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.get("/{project_id}/os-keypairs")
-async def list_key_pairs(project_id: str):
+async def get_key_pairs(base_url: str, x_auth_token: str, project_id: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{COMPUTE}/{project_id}/os-keypairs",
+            f"{base_url}/{project_id}/os-keypairs",
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.post("/servers/local_storage")
-async def create_instance_local_storage(request_body: CreateInstanceLocalStorageRequest):
-    payload = request_body.model_dump()
-
+async def create_instance_local_storage(base_url: str, x_auth_token: str, payload: dict):
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{COMPUTE}/servers",
+            f"{base_url}/servers",
             json=payload,
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()
 
 
-@router.post("/servers/volume_storage")
-async def create_instance_volume_storage(request_body: CreateInstanceVolumeStorageRequest):
-    payload = request_body.model_dump()
-
+async def create_instance_volume_storage(base_url: str, x_auth_token: str, payload: dict):
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{COMPUTE}/servers",
+            f"{base_url}/servers",
             json=payload,
             headers={"X-Auth-Token": x_auth_token}
         )
-
         return response.json()

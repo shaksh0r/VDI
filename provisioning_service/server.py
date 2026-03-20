@@ -11,6 +11,7 @@ from .api.nova import router as nova_router
 from .api.user import router as user_router
 
 from .database_connection import get_db
+from .services.pooling.pool_manager import Pool_Manager
 
 
 @asynccontextmanager
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI):
 
     await app.state.db_pool.close()
 
+
+vm_pool = Pool_Manager(min_vm=10)
 
 
 
