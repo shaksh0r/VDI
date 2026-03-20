@@ -82,9 +82,9 @@ async def get_key_pairs(base_url: str, x_auth_token: str, project_id: str):
         return response.json()
 
 
-async def create_instance_local_storage(base_url: str, x_auth_token: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
+def create_instance_local_storage(base_url: str, x_auth_token: str, payload: dict):
+    with httpx.Client() as client:
+        response =  client.post(
             f"{base_url}/servers",
             json=payload,
             headers={"X-Auth-Token": x_auth_token}

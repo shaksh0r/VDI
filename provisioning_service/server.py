@@ -23,12 +23,9 @@ async def lifespan(app: FastAPI):
     await app.state.db_pool.close()
 
 
-vm_pool = Pool_Manager(min_vm=10)
-
-
-
-
 app = FastAPI(lifespan=lifespan)
+
+vm_pool = Pool_Manager(app,min_vm=2)
 
 app.include_router(glance_router,prefix="/glance")
 app.include_router(keystone_router,prefix="/keystone")

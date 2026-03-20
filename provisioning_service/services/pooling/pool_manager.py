@@ -12,10 +12,11 @@ class VM:
 
 
 class Pool_Manager:
-    def __init__(self, min_vm = 5):
+    def __init__(self, app, min_vm = 5):
         self.min_vm = min_vm
         self.vm_list = []
         self.vm_count = {"draft":0,"provisioning":0,"ready":0,"assigned":0,"in-use":"0","error":0}
+        self.app = app
     
     def add_vm(self,vm:VM):
         self.vm_list.append(vm)
