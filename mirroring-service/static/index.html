@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VDI Mirror</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+
+    <div class="top">
+      <h1>VDI Mirror</h1>
+      <span class="status" id="status" data-ok="false">Disconnected</span>
+    </div>
+
+    <div class="controls">
+      <label>
+        Session
+        <!-- FIX 1: id="session" was missing — app.v3.js needs this element -->
+        <span id="session">Waiting for a session.</span>
+      </label>
+      <div class="buttons">
+        <button id="connect">Connect</button>
+        <button id="disconnect" class="ghost">Disconnect</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="display" id="display"></div>
+    </div>
+
+    <p class="hint">This tunnel uses guacd directly with a fixed connection profile.</p>
+
+  </div>
+
+  <!-- FIX 2: guard against "module is not defined" ReferenceError in browser -->
+  <!-- guacamole-common-js.min.js ends with module.exports = Guacamole        -->
+  <!-- which crashes in a plain <script> context without this stub            -->
+  <script>var module = { exports: {} };</script>
+  <script src="/static/guacamole-common-js.min.js"></script>
+  <script src="/static/app.v3.js"></script>
+</body>
+</html>
