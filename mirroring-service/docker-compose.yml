@@ -2,66 +2,36 @@ services:
   guacd:
     image: guacamole/guacd
     container_name: guacd
-    restart: always
     networks:
-      - guac_network
-    ports:
-      - "4822:4822"
+      - guacamole_net
+    restart: always
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "4822"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  guacamole-db:
-    image: postgres:16
-    container_name: guacamole-db
-    environment:
-      POSTGRES_USER: guacamole_user
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: guacamole_db
-      POSTGRESQL_DATABASE: guacamole_db
-      POSTGRESQL_USERNAME: guacamole_user
-      POSTGRESQL_PASSWORD: postgres
-    volumes:
-      - ./init:/docker-entrypoint-initdb.d
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: always
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi
     networks:
-      - guac_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  guacamole:
-    image: guacamole/guacamole
-    container_name: guacamole
+      - guacamole_net
+    ports:
+      - "8000:8000"
     depends_on:
-      guacamole-db:
-        condition: service_healthy
       guacd:
         condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      GUACD_HOSTNAME: guacd
-      POSTGRESQL_HOSTNAME: guacamole-db
-      POSTGRESQL_DATABASE: guacamole_db
-      POSTGRESQL_USERNAME: guacamole_user
-      POSTGRESQL_PASSWORD: postgres
     restart: always
-    networks:
-      - guac_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 networks:
-  guac_network:
+  guacamole_net:
     driver: bridge
     name: guacamole_net
-
-volumes:
-  postgres_data:
-    name: postgres
