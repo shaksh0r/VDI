@@ -11,10 +11,16 @@ var client   = null;
 var keyboard = null;
 var mouse    = null;
 
-// ── Status helper ─────────────────────────────────────────────────────────────
 function setStatus(text, ok) {
-  statusEl.textContent = text;
-  statusEl.dataset.ok  = ok ? "true" : "false";
+  var chip  = document.getElementById("status");
+  var label = chip.querySelector(".status-chip__label");
+  chip.dataset.ok = ok ? "true" : "false";
+  if (label) label.textContent = text;
+  document.body.classList.toggle("is-connected", !!ok);
+
+  // Hide/show idle placeholder based on connection
+  var placeholder = document.getElementById("placeholder");
+  if (placeholder) placeholder.style.display = ok ? "none" : "";
 }
 
 // ── Session fetch ─────────────────────────────────────────────────────────────
@@ -283,7 +289,7 @@ function connect() {
         // 0=IDLE 1=CONNECTING 2=WAITING 3=CONNECTED 4=DISCONNECTING 5=DISCONNECTED
         var labels = [
           "Idle", "Connecting…", "Waiting…",
-          "Connected ✅", "Disconnecting…", "Disconnected"
+          "Connected", "Disconnecting…", "Disconnected"
         ];
         var ok = (state === 3);
         setStatus(labels[state] || ("State " + state), ok);
