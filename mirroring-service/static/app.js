@@ -1,4 +1,4 @@
-// app.js  –  RawTunnel direct WebSocket relay, no internal UUID handshake
+// app.v3.js  –  RawTunnel direct WebSocket relay, no internal UUID handshake
 
 // ── DOM references ────────────────────────────────────────────────────────────
 var statusEl      = document.getElementById("status");
@@ -6,12 +6,6 @@ var sessionEl     = document.getElementById("session");
 var connectBtn    = document.getElementById("connect");
 var disconnectBtn = document.getElementById("disconnect");
 var displayEl     = document.getElementById("display");
-
-// The .viewport element is the 1fr grid row that owns all available
-// space between the action bar and info bar. Reading dimensions from
-// here gives the true usable area — unaffected by the scaled canvas
-// sitting inside .rdp-surface (displayEl) which is position:absolute.
-var viewportEl = displayEl.parentElement;
 
 var client   = null;
 var keyboard = null;
@@ -24,6 +18,7 @@ function setStatus(text, ok) {
   if (label) label.textContent = text;
   document.body.classList.toggle("is-connected", !!ok);
 
+  // Hide/show idle placeholder based on connection
   var placeholder = document.getElementById("placeholder");
   if (placeholder) placeholder.style.display = ok ? "none" : "";
 }
@@ -39,6 +34,15 @@ function fetchSession() {
 }
 
 // ── Guacamole instruction parser ──────────────────────────────────────────────
+// Correctly handles multiple instructions per WebSocket frame.
+// guacd routinely batches many instructions into one WS message.
+//
+// Format per instruction:  <len>.<value>[,<len>.<value>]*;
+// Example (two instructions in one frame):
+//   "4.sync,10.1234567890;5.mouse,1.0,3.100,3.200;"
+//
+// Returns array of { opcode, args } objects parsed from `data`.
+
 function parseInstructions(data) {
   var results = [];
   var pos     = 0;
@@ -49,27 +53,28 @@ function parseInstructions(data) {
     var complete = false;
 
     while (pos < len) {
+      // Read the length prefix (digits before the '.')
       var dotPos = data.indexOf(".", pos);
-      if (dotPos === -1) return results;
+      if (dotPos === -1) return results; // truncated frame — stop
 
       var elemLen = parseInt(data.substring(pos, dotPos), 10);
-      if (isNaN(elemLen)) return results;
+      if (isNaN(elemLen)) return results; // malformed — stop
 
       var valStart = dotPos + 1;
       var valEnd   = valStart + elemLen;
 
-      if (valEnd > len) return results;
+      if (valEnd > len) return results; // incomplete element — stop
 
       elements.push(data.substring(valStart, valEnd));
 
       var terminator = data.charAt(valEnd);
-      pos = valEnd + 1;
+      pos = valEnd + 1; // advance past value + terminator character
 
       if (terminator === ";") {
         complete = true;
-        break;
+        break; // end of this instruction
       }
-      if (terminator !== ",") return results;
+      if (terminator !== ",") return results; // unexpected character — stop
     }
 
     if (complete && elements.length > 0) {
@@ -81,11 +86,29 @@ function parseInstructions(data) {
 }
 
 // ── RawTunnel ─────────────────────────────────────────────────────────────────
+//
+// Implements the Guacamole.Tunnel interface as a plain WebSocket tunnel.
+// NO internal UUID handshake, NO INTERNAL_DATA_OPCODE processing.
+// This is a transparent pipe — exactly what main.py's relay expects.
+//
+// Why not Guacamole.WebSocketTunnel?
+//   That class expects a full Guacamole app server (Java/Tomcat) to respond
+//   with a tunnel UUID on the first INTERNAL_DATA_OPCODE ping. Our relay
+//   has no concept of tunnel UUIDs — it passes raw instructions directly.
+//   Using WebSocketTunnel causes instant disconnect because the tunnel never
+//   transitions from CONNECTING → OPEN (no UUID received → state stuck).
+
 function RawTunnel(wsUrl) {
   Guacamole.Tunnel.call(this);
   var self   = this;
   var socket = null;
 
+  // sendMessage is called by Guacamole.Client to send instructions:
+  //   sendMessage("nop")
+  //   sendMessage("mouse", x, y, buttonMask)
+  //   sendMessage("key", keysym, pressed)
+  //   sendMessage("size", width, height)
+  //   sendMessage("disconnect")
   this.sendMessage = function() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     if (arguments.length === 0) return;
@@ -98,17 +121,25 @@ function RawTunnel(wsUrl) {
   };
 
   this.connect = function(data) {
+    // data = "width=W&height=H&dpi=D" — append as query string
+    // main.py reads these via websocket.query_params
     var url = wsUrl + (data ? "?" + data : "");
     self.setState(Guacamole.Tunnel.State.CONNECTING);
 
+    // Open with "guacamole" subprotocol — MUST match server's accept()
     socket = new WebSocket(url, "guacamole");
 
     socket.onopen = function() {
       console.log("[RawTunnel] WebSocket open");
+      // Transition to OPEN immediately — no UUID handshake needed
       self.setState(Guacamole.Tunnel.State.OPEN);
     };
 
     socket.onmessage = function(event) {
+      // Parse ALL instructions in this frame and dispatch each one.
+      // guacd batches multiple instructions per WS message, especially
+      // during the initial screen paint — if we only parse the first one
+      // the canvas stays black.
       var instructions = parseInstructions(event.data);
       for (var i = 0; i < instructions.length; i++) {
         var instr = instructions[i];
@@ -154,10 +185,10 @@ function buildTunnelUrl() {
 }
 
 function buildConnectParam() {
-  // Use viewportEl so the initial RDP session resolution matches
-  // the true available area (the 1fr grid row), not the canvas div.
-  var width  = viewportEl.clientWidth  || window.innerWidth  || 1280;
-  var height = viewportEl.clientHeight || window.innerHeight || 720;
+  // displayEl may not have dimensions yet if CSS hasn't applied —
+  // fall back to window dimensions in that case
+  var width  = displayEl.clientWidth  || window.innerWidth  || 1280;
+  var height = displayEl.clientHeight || window.innerHeight || 720;
   var dpi    = Math.round((window.devicePixelRatio || 1) * 96);
   return "width=" + width + "&height=" + height + "&dpi=" + dpi;
 }
@@ -168,6 +199,7 @@ function attachInputHandlers(c) {
   var el = c.getDisplay().getElement();
 
   mouse             = new Guacamole.Mouse(el);
+  // Pass true as second arg to sendMouseState so it scales by display zoom
   mouse.onmousedown = function(s) { c.sendMouseState(s, true); };
   mouse.onmouseup   = function(s) { c.sendMouseState(s, true); };
   mouse.onmousemove = function(s) { c.sendMouseState(s, true); };
@@ -193,40 +225,16 @@ function detachInputHandlers() {
 
 
 // ── Display scaling ───────────────────────────────────────────────────────────
-// Reads dimensions from viewportEl — the .viewport div that is the
-// 1fr CSS grid row. This is always the correct available area:
-//
-//   shell grid rows:
-//     --h-chrome    48px   ← top nav bar
-//     --h-actionbar 40px   ← connect/disconnect bar
-//     1fr           ←←← viewportEl lives here
-//     --h-infobar   26px   ← bottom status bar
-//
-// displayEl (.rdp-surface) is position:absolute;inset:0 INSIDE
-// viewportEl, so its clientWidth/Height gets polluted by the scaled
-// Guacamole canvas div (which has hardcoded px width/height set by
-// display.scale()). viewportEl is never polluted by the canvas.
-//
-// Scale is Math.min(scaleX, scaleY) so the canvas fits fully in
-// both dimensions — fills width AND height without overflow.
 function fitDisplay(c) {
   var display      = c.getDisplay();
   var remoteWidth  = display.getWidth();
   var remoteHeight = display.getHeight();
   if (!remoteWidth || !remoteHeight) return;
 
-  var containerWidth  = viewportEl.clientWidth  || window.innerWidth  || 1280;
-  var containerHeight = viewportEl.clientHeight || window.innerHeight || 720;
-
-  var scaleX = containerWidth  / remoteWidth;
-  var scaleY = containerHeight / remoteHeight;
-
-  // Apply non-uniform scale directly — fills width AND height fully
-  var el = display.getElement();
-  el.style.transform         = "scale(" + scaleX + ", " + scaleY + ")";
-  el.style.WebkitTransform   = "scale(" + scaleX + ", " + scaleY + ")";
-  el.style.transformOrigin   = "0 0";
-  el.style.webkitTransformOrigin = "0 0";
+  var containerWidth = displayEl.clientWidth || window.innerWidth || 1280;
+  var scale          = containerWidth / remoteWidth;
+  display.scale(scale);
+  displayEl.style.height = Math.round(remoteHeight * scale) + "px";
 }
 
 
@@ -243,9 +251,10 @@ function connect() {
     .catch(function(err) {
       sessionEl.textContent = "No session assigned.";
       setStatus(err.message, false);
-      return Promise.reject(err);
+      return Promise.reject(err); // stop the chain
     })
     .then(function() {
+      // Tear down any existing client
       if (client) { client.disconnect(); client = null; }
       detachInputHandlers();
       displayEl.innerHTML = "";
@@ -259,10 +268,12 @@ function connect() {
       var tunnel = new RawTunnel(tunnelUrl);
       client     = new Guacamole.Client(tunnel);
 
+      // Mount the display element (a <div> containing the canvas layers)
       var displayElem = client.getDisplay().getElement();
       displayEl.appendChild(displayElem);
 
-      // Called every time guacd sends a resize instruction
+      // Wire up display resize — called every time guacd sends a resize
+      // instruction (e.g. on connect, and when the remote desktop resizes)
       client.getDisplay().onresize = function() {
         fitDisplay(client);
       };
@@ -275,6 +286,7 @@ function connect() {
       };
 
       client.onstatechange = function(state) {
+        // 0=IDLE 1=CONNECTING 2=WAITING 3=CONNECTED 4=DISCONNECTING 5=DISCONNECTED
         var labels = [
           "Idle", "Connecting…", "Waiting…",
           "Connected", "Disconnecting…", "Disconnected"
@@ -284,6 +296,8 @@ function connect() {
         if (ok) fitDisplay(client);
       };
 
+      // connect() sends connectParam to RawTunnel.connect(data)
+      // which appends it as ?width=W&height=H&dpi=D on the WebSocket URL
       client.connect(connectParam);
     })
     .catch(function() { /* already handled above */ });
@@ -305,20 +319,7 @@ function disconnect() {
 // ── Event listeners ───────────────────────────────────────────────────────────
 connectBtn.addEventListener("click",    connect);
 disconnectBtn.addEventListener("click", disconnect);
-
-// window resize covers: window drag-resize, DevTools open/close,
-// zoom level changes, split-screen changes.
 window.addEventListener("resize", function() {
-  if (client) fitDisplay(client);
-});
-
-// fullscreenchange covers: F11, browser fullscreen API, and any
-// element entering/exiting fullscreen — window resize does NOT fire
-// reliably for this in all browsers.
-document.addEventListener("fullscreenchange", function() {
-  if (client) fitDisplay(client);
-});
-document.addEventListener("webkitfullscreenchange", function() {
   if (client) fitDisplay(client);
 });
 
