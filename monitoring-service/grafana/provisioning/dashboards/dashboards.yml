@@ -1,0 +1,14 @@
+# Dashboard provisioning - load JSON dashboards from this folder
+apiVersion: 1
+
+providers:
+  - name: "VDI Dashboards"
+    orgId: 1
+    folder: "VDI"
+    folderUid: "vdi"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

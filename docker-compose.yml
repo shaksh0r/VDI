@@ -1,0 +1,75 @@
+# VDI - Virtual Desktop Infrastructure
+# Monitoring stack: Monitoring Service + Prometheus + Grafana
+
+services:
+  database:
+    build: ./database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vdi}
+      POSTGRES_USER: ${POSTGRES_USER:-vdi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
+    ports:
+      - "5432:5432"
+    volumes:
+      - vdi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vdi} -d ${POSTGRES_DB:-vdi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  monitoring-service:
+    build: ./monitoring-service
+    environment:
+      MONITORING_DB_HOST: database
+      MONITORING_DB_PORT: 5432
+      MONITORING_DB_NAME: ${POSTGRES_DB:-vdi}
+      MONITORING_DB_USER: ${POSTGRES_USER:-vdi}
+      MONITORING_DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
+      OS_AUTH_URL: ${OS_AUTH_URL:-}
+      OS_PROJECT_NAME: ${OS_PROJECT_NAME:-admin}
+      OS_USERNAME: ${OS_USERNAME:-}
+      OS_PASSWORD: ${OS_PASSWORD:-}
+      OS_USER_DOMAIN_NAME: ${OS_USER_DOMAIN_NAME:-Default}
+      OS_PROJECT_DOMAIN_NAME: ${OS_PROJECT_DOMAIN_NAME:-Default}
+    ports:
+      - "9091:9091"
+    depends_on:
+      database:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring-service/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      - monitoring-service
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_PORT: 3000
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring-service/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring-service/grafana/provisioning/dashboards/json:/etc/grafana/provisioning/dashboards/json:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  vdi_pgdata:
+  prometheus_data:
+  grafana_data:

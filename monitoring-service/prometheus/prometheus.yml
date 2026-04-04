@@ -1,0 +1,20 @@
+# Prometheus config for VDI Monitoring
+# Scrapes the VDI monitoring microservice and (optionally) OpenStack exporter.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # VDI Monitoring Microservice (VM, host, pool, session metrics)
+  - job_name: "vdi-monitoring"
+    static_configs:
+      - targets: ["monitoring-service:9091"]
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  # Optional: add OpenStack exporter when you run it (e.g. openstack-exporter:9183)
+  # - job_name: "openstack"
+  #   static_configs:
+  #     - targets: ["openstack-exporter:9183"]
+  #   scrape_interval: 1m
