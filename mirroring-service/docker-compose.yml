@@ -3,13 +3,14 @@ services:
     image: guacamole/guacd
     container_name: guacd
     networks:
-      - guacamole_net
+      - guac_net
     restart: always
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "4822"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   fastapi:
     build:
@@ -17,7 +18,7 @@ services:
       dockerfile: Dockerfile
     container_name: fastapi
     networks:
-      - guacamole_net
+      - guac_net
     ports:
       - "8000:8000"
     depends_on:
@@ -32,6 +33,6 @@ services:
       start_period: 30s
 
 networks:
-  guacamole_net:
+  guac_net:
     driver: bridge
     name: guacamole_net
