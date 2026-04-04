@@ -1,4 +1,4 @@
-// app.v3.js  –  RawTunnel direct WebSocket relay, no internal UUID handshake
+// app.js  –  RawTunnel direct WebSocket relay, no internal UUID handshake
 
 // ── DOM references ────────────────────────────────────────────────────────────
 var statusEl      = document.getElementById("status");
@@ -10,6 +10,10 @@ var displayEl     = document.getElementById("display");
 var client   = null;
 var keyboard = null;
 var mouse    = null;
+
+// Debounce timer for resize events — avoids flooding guacd with size
+// instructions on every pixel of a drag-resize or fullscreen transition.
+var resizeTimer = null;
 
 function setStatus(text, ok) {
   var chip  = document.getElementById("status");
@@ -185,8 +189,9 @@ function buildTunnelUrl() {
 }
 
 function buildConnectParam() {
-  // displayEl may not have dimensions yet if CSS hasn't applied —
-  // fall back to window dimensions in that case
+  // Use the actual viewport dimensions at the moment of connection.
+  // If fullscreen is already active, screen.width/height gives true pixels.
+  // Fall back to window dimensions, then safe defaults.
   var width  = displayEl.clientWidth  || window.innerWidth  || 1280;
   var height = displayEl.clientHeight || window.innerHeight || 720;
   var dpi    = Math.round((window.devicePixelRatio || 1) * 96);
@@ -225,16 +230,35 @@ function detachInputHandlers() {
 
 
 // ── Display scaling ───────────────────────────────────────────────────────────
+// FIX: fitDisplay now does TWO things:
+//   1. Scale the canvas visually to fill the container (CSS transform).
+//   2. Send a Guacamole "size" instruction to guacd so the VM's actual
+//      framebuffer is resized to match — this is what was missing before.
 function fitDisplay(c) {
   var display      = c.getDisplay();
   var remoteWidth  = display.getWidth();
   var remoteHeight = display.getHeight();
   if (!remoteWidth || !remoteHeight) return;
 
-  var containerWidth = displayEl.clientWidth || window.innerWidth || 1280;
-  var scale          = containerWidth / remoteWidth;
+  // Determine the available container space.
+  // In fullscreen mode, the viewport element fills the entire screen.
+  var containerWidth  = displayEl.clientWidth  || window.innerWidth  || 1280;
+  var containerHeight = displayEl.clientHeight || window.innerHeight || 720;
+
+  // ── Step 1: CSS visual scale (stretches existing canvas to fill container)
+  var scaleX = containerWidth  / remoteWidth;
+  var scaleY = containerHeight / remoteHeight;
+  // Use the smaller of the two scales to maintain aspect ratio without clipping
+  var scale  = Math.min(scaleX, scaleY);
   display.scale(scale);
-  displayEl.style.height = Math.round(remoteHeight * scale) + "px";
+
+  // ── Step 2: Send a real Guacamole "size" instruction to guacd.
+  // This is the critical missing piece: it tells guacd (and thereby the VM
+  // via RDP display-update) to actually change its framebuffer resolution.
+  // The VM will re-render at the new resolution and guacd will push the
+  // updated frames. The display.onresize callback will then fire again,
+  // completing the loop with a fresh fitDisplay() call at the new dimensions.
+  c.sendSize(containerWidth, containerHeight);
 }
 
 
@@ -316,11 +340,33 @@ function disconnect() {
 }
 
 
+// ── Viewport resize handler (debounced) ───────────────────────────────────────
+// FIX: A debounced handler ensures that rapid resize events (during window
+// drag or fullscreen transition animation) are coalesced into a single
+// sendSize() call, preventing instruction flooding to guacd.
+function onViewportResize() {
+  if (!client) return;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() {
+    fitDisplay(client);
+  }, 150); // 150 ms debounce — enough for fullscreen transition to settle
+}
+
+
 // ── Event listeners ───────────────────────────────────────────────────────────
 connectBtn.addEventListener("click",    connect);
 disconnectBtn.addEventListener("click", disconnect);
-window.addEventListener("resize", function() {
-  if (client) fitDisplay(client);
-});
+
+// Standard window resize (covers drag-resizing the browser window)
+window.addEventListener("resize", onViewportResize);
+
+// FIX: Fullscreen change events — fired by the Fullscreen API when the
+// browser enters or exits true fullscreen mode. At this point
+// window.innerWidth/Height reflect the full screen dimensions.
+// All vendor-prefixed variants are registered for maximum compatibility.
+document.addEventListener("fullscreenchange",       onViewportResize);
+document.addEventListener("webkitfullscreenchange", onViewportResize);
+document.addEventListener("mozfullscreenchange",    onViewportResize);
+document.addEventListener("MSFullscreenChange",     onViewportResize);
 
 setStatus("Disconnected", false);
