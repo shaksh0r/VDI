@@ -31,12 +31,14 @@ VM-level CPU/RAM/disk usage can be added later via Ceilometer or in-guest agents
 From the project root:
 
 ```bash
-# Copy env and set OpenStack + DB credentials
 cp .env.example .env
-# Edit .env: POSTGRES_*, OS_*, GRAFANA_*
+cp monitoring-service/.env.example monitoring-service/.env
+# Edit root .env (POSTGRES_*) and monitoring-service/.env (GF_*, optional OS_*)
 
 docker compose up -d database monitoring-service prometheus grafana
 ```
+
+Grafana and the monitoring microservice read **`monitoring-service/.env`** (see `monitoring-service/.env.example`).
 
 - **Monitoring service**: http://localhost:9091/health, http://localhost:9091/metrics  
 - **Prometheus**: http://localhost:9090  

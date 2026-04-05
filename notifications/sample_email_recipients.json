@@ -1,0 +1,17 @@
+{
+  "lab_title": "CSCE 3201 — Virtual Lab Sandbox",
+  "pool_name": "pool_alpha_2026q1",
+  "portal_url": "https://vdi.vditeam.com",
+  "students": [
+    {
+      "email": "2105088@ugrad.cse.buet.ac.bd",
+      "student_id": "2105088",
+      "full_name": "Ayesha Rahman"
+    },
+    {
+      "email": "2105079@ugrad.cse.buet.ac.bd",
+      "student_id": "2105079",
+      "full_name": "Tanvir Hossain"
+    }
+  ]
+}

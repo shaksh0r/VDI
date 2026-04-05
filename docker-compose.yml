@@ -21,18 +21,14 @@ services:
 
   monitoring-service:
     build: ./monitoring-service
+    env_file:
+      - ./monitoring-service/.env
     environment:
       MONITORING_DB_HOST: database
       MONITORING_DB_PORT: 5432
       MONITORING_DB_NAME: ${POSTGRES_DB:-vdi}
       MONITORING_DB_USER: ${POSTGRES_USER:-vdi}
       MONITORING_DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
-      OS_AUTH_URL: ${OS_AUTH_URL:-}
-      OS_PROJECT_NAME: ${OS_PROJECT_NAME:-admin}
-      OS_USERNAME: ${OS_USERNAME:-}
-      OS_PASSWORD: ${OS_PASSWORD:-}
-      OS_USER_DOMAIN_NAME: ${OS_USER_DOMAIN_NAME:-Default}
-      OS_PROJECT_DOMAIN_NAME: ${OS_PROJECT_DOMAIN_NAME:-Default}
     ports:
       - "9091:9091"
     depends_on:
@@ -55,96 +51,16 @@ services:
 
   grafana:
     image: grafana/grafana:10.2.2
+    env_file:
+      - ./monitoring-service/.env
     ports:
       - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_HTTP_PORT: 3000
-      GF_INSTALL_PLUGINS: ""
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring-service/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring-service/grafana/provisioning/dashboards/json:/etc/grafana/provisioning/dashboards/json:ro
     depends_on:
       - prometheus
-
-  # Optional: lab deploy API + Celery + RabbitMQ (docker compose --profile provisioning up -d)
-  rabbitmq:
-    profiles: ["provisioning"]
-    image: rabbitmq:3.13-management-alpine
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  provisioning-api:
-    profiles: ["provisioning"]
-    build:
-      context: .
-      dockerfile: provisioning_service/Dockerfile
-    environment:
-      PYTHONPATH: /app
-      DB_HOST: database
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-vdi}
-      DB_USER: ${POSTGRES_USER:-vdi}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
-      NOVA_COMPUTE_URL: ${NOVA_COMPUTE_URL:-http://topcsnova.cloudlab.buet.ac.bd/v2.1}
-      OPENSTACK_TOKEN: ${OPENSTACK_TOKEN:-}
-      OPENSTACK_KEY_NAME: ${OPENSTACK_KEY_NAME:-default-key}
-      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
-      CELERY_RESULT_BACKEND: rpc://
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      RESEND_FROM: ${RESEND_FROM:-}
-      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
-      PROVISIONING_INTERNAL_SECRET: ${PROVISIONING_INTERNAL_SECRET:-}
-    ports:
-      - "8010:8010"
-    depends_on:
-      database:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-
-  celery-worker:
-    profiles: ["provisioning"]
-    build:
-      context: .
-      dockerfile: provisioning_service/Dockerfile
-    command:
-      [
-        "celery",
-        "-A",
-        "provisioning_service.message_queue.celery_app",
-        "worker",
-        "--loglevel=info",
-      ]
-    environment:
-      PYTHONPATH: /app
-      DB_HOST: database
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-vdi}
-      DB_USER: ${POSTGRES_USER:-vdi}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
-      NOVA_COMPUTE_URL: ${NOVA_COMPUTE_URL:-}
-      OPENSTACK_TOKEN: ${OPENSTACK_TOKEN:-}
-      OPENSTACK_KEY_NAME: ${OPENSTACK_KEY_NAME:-default-key}
-      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
-      CELERY_RESULT_BACKEND: rpc://
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      RESEND_FROM: ${RESEND_FROM:-}
-      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
-    depends_on:
-      database:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
 
 volumes:
   vdi_pgdata:

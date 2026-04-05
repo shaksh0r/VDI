@@ -1,19 +1,16 @@
 import asyncpg
 from fastapi import Request
 
-from provisioning_service.config_env import db_settings
-
 
 async def create_database_pool():
-    cfg = db_settings()
     pool = await asyncpg.create_pool(
-        user=cfg["user"],
-        password=cfg["password"],
-        database=cfg["database"],
-        host=cfg["host"],
-        port=cfg["port"],
-        min_size=cfg["min_size"],
-        max_size=cfg["max_size"],
+        user="myuser",
+        password="mypassword",
+        database="mydatabase",
+        host="localhost",
+        min_size=10,
+        max_size=20,
+        port=5432
     )
 
     return pool

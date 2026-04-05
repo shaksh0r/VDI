@@ -1,4 +1,7 @@
 provisioning-service/.env
+provisioning_service/.env
+monitoring-service/.env
+notifications/.env
 auth-service/.env
 auth-service/.venv
 .venv

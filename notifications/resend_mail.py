@@ -10,16 +10,29 @@ Setup:
 Run a test from the repo root (with .env or env vars set):
 
   python -m notifications.resend_mail --to teammate@example.com --code 123456
+
+Hello-world test (same shape as Resend onboarding docs; reads recipient emails from JSON):
+
+  python -m notifications.resend_mail --hello-test notifications/sample_email_recipients.json
 """
 from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 import resend
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +88,55 @@ def send_raw_email(
     if not response or not getattr(response, "id", None):
         raise ResendMailError("Resend returned no message id")
 
+    return str(response.id)
+
+
+def recipient_emails_from_json(data: dict[str, Any]) -> list[str]:
+    """Collect unique recipient addresses from a lab-style JSON payload."""
+    out: list[str] = []
+    if isinstance(data.get("recipients"), list):
+        for item in data["recipients"]:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+    students = data.get("students")
+    if isinstance(students, list):
+        for s in students:
+            if isinstance(s, dict):
+                e = (s.get("email") or "").strip()
+                if e:
+                    out.append(e)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for e in out:
+        if e not in seen:
+            seen.add(e)
+            unique.append(e)
+    if not unique:
+        raise ResendMailError("JSON has no recipient emails (use 'recipients' or 'students[].email')")
+    return unique
+
+
+def send_hello_world_test(*, to: str | list[str]) -> str:
+    """
+    Minimal send matching Resend's onboarding example (https://resend.com docs).
+
+    Uses RESEND_API_KEY and RESEND_FROM from the environment.
+    """
+    _configure_client()
+    from_addr = _require_env("RESEND_FROM")
+    params: resend.Emails.SendParams = {
+        "from": from_addr,
+        "to": to,
+        "subject": "Hello World",
+        "html": "<p>Congrats on sending your <strong>first email</strong>!</p>",
+    }
+    try:
+        response = resend.Emails.send(params)
+    except Exception as e:
+        logger.exception("Resend API error")
+        raise ResendMailError(str(e)) from e
+    if not response or not getattr(response, "id", None):
+        raise ResendMailError("Resend returned no message id")
     return str(response.id)
 
 
@@ -145,12 +207,26 @@ def send_access_code_email(
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Send a test access-code email via Resend")
-    parser.add_argument("--to", required=True, help="Recipient email")
+    parser.add_argument("--hello-test", metavar="JSON", help="Send Resend onboarding-style Hello World to emails in JSON")
+    parser.add_argument("--to", help="Recipient email (not used with --hello-test)")
     parser.add_argument("--code", default="123456", help="6-digit code (default 123456)")
     parser.add_argument("--name", default=None, help="Student display name")
     parser.add_argument("--lab", default=None, help="Lab title")
     parser.add_argument("--portal", default=None, help="Portal URL for the HTML body")
     args = parser.parse_args()
+
+    if args.hello_test:
+        path = Path(args.hello_test)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise SystemExit("JSON root must be an object")
+        recipients = recipient_emails_from_json(data)
+        mid = send_hello_world_test(to=recipients)
+        print(f"Sent to {len(recipients)} address(es). Resend id: {mid}")
+        return
+
+    if not args.to:
+        parser.error("--to is required unless --hello-test is used")
 
     mid = send_access_code_email(
         args.to,
