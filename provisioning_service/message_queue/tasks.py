@@ -31,6 +31,10 @@ NETWORK             = "http://topcsneutron.cloudlab.buet.ac.bd/v2.0"      # Neut
 EXTERNAL_NETWORK_ID = os.getenv("EXTERNAL_NETWORK_ID")    # External network for floating IPs
 x_auth_token        = str(os.getenv("openstack_token"))
 
+# Optional extra security groups for created VMs (names/IDs from env)
+EXTRA_SEC_GROUP_1 = os.getenv("PROD_SEC")
+EXTRA_SEC_GROUP_2 = os.getenv("ALLOW_PING_SSH")
+
 # Polling config for finalize_vm
 POLL_INTERVAL_SECONDS = 5
 POLL_MAX_ATTEMPTS     = 24   # 24 x 5s = 120s max wait for VM to become ACTIVE
@@ -276,6 +280,14 @@ def generate_pool():
                 vm_need = config["min_vms"] - config["current_count"]
                 for i in range(vm_need):
                     name      = "vm-" + str(uuid.uuid4())
+
+                    # Build security_groups list: always "default" plus any extra
+                    security_groups = [{"name": "default"}]
+                    if EXTRA_SEC_GROUP_1:
+                        security_groups.append({"name": EXTRA_SEC_GROUP_1})
+                    if EXTRA_SEC_GROUP_2:
+                        security_groups.append({"name": EXTRA_SEC_GROUP_2})
+
                     payload   = {
                         "server": {
                             "name":      name,
@@ -294,9 +306,7 @@ def generate_pool():
                             "networks": [
                                 {"uuid": config["network_id"]}
                             ],
-                            "security_groups": [
-                                {"name": "default"}
-                            ],
+                            "security_groups": security_groups,
                         }
                     }
                     create_vm.delay(payload)
