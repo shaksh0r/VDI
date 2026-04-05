@@ -5,10 +5,6 @@ import uuid
 
 import json 
 
-with open("test.json","r") as file:
-    data = json.load(file)
-
-data["server"]["name"] = "vm-" + str(uuid.uuid4()) 
 
 
 celery.conf.beat_schedule = {
