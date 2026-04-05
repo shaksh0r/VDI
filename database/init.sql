@@ -85,6 +85,15 @@ CREATE TYPE check_type AS ENUM (
     'http'
 );
 
+-- Lab deployments (teacher-triggered persistent VM + access codes)
+CREATE TYPE lab_deployment_status AS ENUM (
+    'pending',
+    'processing',
+    'completed',
+    'failed',
+    'partial'
+);
+
 -- ============================================================================
 -- TABLES
 -- ============================================================================
@@ -404,6 +413,58 @@ CREATE INDEX idx_assignments_metadata ON user_assignments USING gin (session_met
 COMMENT ON TABLE user_assignments IS 'History of VM-to-user assignments and sessions';
 
 COMMENT ON COLUMN user_assignments.session_metadata IS 'JSON: bandwidth, apps_used, activity_logs';
+
+-- ----------------------------------------------------------------------------
+-- Lab deployments (roster + metadata; seats and codes in lab_access_codes)
+-- ----------------------------------------------------------------------------
+CREATE TABLE lab_deployments (
+    deployment_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    pool_id UUID NOT NULL REFERENCES desktop_pools (pool_id) ON DELETE CASCADE,
+    teacher_user_id UUID REFERENCES users (user_id) ON DELETE SET NULL,
+    lab_title VARCHAR(255) NOT NULL,
+    portal_url TEXT,
+    roster_json JSONB NOT NULL,
+    status lab_deployment_status NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX idx_lab_deployments_pool ON lab_deployments (pool_id, created_at DESC);
+
+CREATE INDEX idx_lab_deployments_status ON lab_deployments (status);
+
+COMMENT ON TABLE lab_deployments IS 'Teacher lab launch: roster snapshot and lifecycle';
+
+COMMENT ON COLUMN lab_deployments.roster_json IS 'JSON array: [{email, student_id?, full_name?}, ...]';
+
+-- ----------------------------------------------------------------------------
+-- Per-student access code and VM linkage (Join flow + Resend audit)
+-- ----------------------------------------------------------------------------
+CREATE TABLE lab_access_codes (
+    seat_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    deployment_id UUID NOT NULL REFERENCES lab_deployments (deployment_id) ON DELETE CASCADE,
+    access_code CHAR(6) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL,
+    student_external_id VARCHAR(100),
+    full_name VARCHAR(255),
+    openstack_server_id VARCHAR(255),
+    instance_id UUID REFERENCES desktop_instances (instance_id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users (user_id) ON DELETE SET NULL,
+    vm_error TEXT,
+    email_sent_at TIMESTAMP,
+    email_last_error TEXT,
+    email_attempts INTEGER NOT NULL DEFAULT 0,
+    resend_message_id VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_lab_seat_deployment_email UNIQUE (deployment_id, email)
+);
+
+CREATE INDEX idx_lab_access_codes_code ON lab_access_codes (access_code);
+
+CREATE INDEX idx_lab_access_codes_deployment ON lab_access_codes (deployment_id);
+
+COMMENT ON TABLE lab_access_codes IS 'Maps unique 6-digit code to student email and VM; email delivery tracked here';
 
 -- ----------------------------------------------------------------------------
 -- Scaling Policies

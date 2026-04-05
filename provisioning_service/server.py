@@ -9,6 +9,7 @@ from .api.keystone import router as keystone_router
 from .api.neutron import router as neutron_router
 from .api.nova import router as nova_router
 from .api.user import router as user_router
+from .api.lab import router as lab_router
 
 from .database_connection import get_db
 from .services.pooling.pool_manager import Pool_Manager
@@ -32,6 +33,7 @@ app.include_router(keystone_router,prefix="/keystone")
 app.include_router(neutron_router,prefix="/neutron")
 app.include_router(nova_router,prefix="/nova")
 app.include_router(user_router,prefix="/user")
+app.include_router(lab_router)
 
 
 class User(BaseModel):

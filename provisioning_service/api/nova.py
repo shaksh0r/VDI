@@ -1,9 +1,10 @@
-import os
-from dotenv import load_dotenv
-from fastapi import APIRouter
 import asyncio
 
+from dotenv import load_dotenv
+from fastapi import APIRouter
+
 from models.nova_models import CreateInstanceLocalStorageRequest, CreateInstanceVolumeStorageRequest
+from provisioning_service.config_env import nova_compute_url, openstack_token
 from ..logic.vm import (
     get_instances,
     get_detailed_instances,
@@ -18,12 +19,12 @@ from ..logic.vm import (
     create_instance_volume_storage,
 )
 
+load_dotenv()
+
 router = APIRouter()
 
-COMPUTE = "http://topcsnova.cloudlab.buet.ac.bd/v2.1"
-
-load_dotenv()
-x_auth_token = str(os.getenv("openstack_token"))
+COMPUTE = nova_compute_url()
+x_auth_token = str(openstack_token())
 
 
 @router.get("/servers")

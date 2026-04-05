@@ -9,7 +9,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-vdi}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
     ports:
-      - "5432:5432"
+      # Host port: set POSTGRES_PUBLISH_PORT=5433 if 5432 is already in use (local PostgreSQL, etc.)
+      - "${POSTGRES_PUBLISH_PORT:-5432}:5432"
     volumes:
       - vdi_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -68,6 +69,82 @@ services:
       - ./monitoring-service/grafana/provisioning/dashboards/json:/etc/grafana/provisioning/dashboards/json:ro
     depends_on:
       - prometheus
+
+  # Optional: lab deploy API + Celery + RabbitMQ (docker compose --profile provisioning up -d)
+  rabbitmq:
+    profiles: ["provisioning"]
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  provisioning-api:
+    profiles: ["provisioning"]
+    build:
+      context: .
+      dockerfile: provisioning_service/Dockerfile
+    environment:
+      PYTHONPATH: /app
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-vdi}
+      DB_USER: ${POSTGRES_USER:-vdi}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
+      NOVA_COMPUTE_URL: ${NOVA_COMPUTE_URL:-http://topcsnova.cloudlab.buet.ac.bd/v2.1}
+      OPENSTACK_TOKEN: ${OPENSTACK_TOKEN:-}
+      OPENSTACK_KEY_NAME: ${OPENSTACK_KEY_NAME:-default-key}
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: rpc://
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
+      PROVISIONING_INTERNAL_SECRET: ${PROVISIONING_INTERNAL_SECRET:-}
+    ports:
+      - "8010:8010"
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  celery-worker:
+    profiles: ["provisioning"]
+    build:
+      context: .
+      dockerfile: provisioning_service/Dockerfile
+    command:
+      [
+        "celery",
+        "-A",
+        "provisioning_service.message_queue.celery_app",
+        "worker",
+        "--loglevel=info",
+      ]
+    environment:
+      PYTHONPATH: /app
+      DB_HOST: database
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-vdi}
+      DB_USER: ${POSTGRES_USER:-vdi}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-vdi}
+      NOVA_COMPUTE_URL: ${NOVA_COMPUTE_URL:-}
+      OPENSTACK_TOKEN: ${OPENSTACK_TOKEN:-}
+      OPENSTACK_KEY_NAME: ${OPENSTACK_KEY_NAME:-default-key}
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      CELERY_RESULT_BACKEND: rpc://
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   vdi_pgdata:

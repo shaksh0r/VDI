@@ -1,0 +1,2 @@
+# Transactional email (https://resend.com)
+resend>=2.0.0
