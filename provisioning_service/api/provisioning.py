@@ -6,7 +6,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
-from database_connection import create_database_pool, get_db
+from ..database_connection import create_database_pool, get_db
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Logging

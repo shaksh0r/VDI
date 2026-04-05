@@ -6,7 +6,6 @@ from provisioning_service.logic.vm import (
 )
 
 from provisioning_service.logic.network import (
-        get_floating_ips,
     create_floating_ip,
     get_port_by_device,
     attach_floating_ip,
@@ -28,7 +27,7 @@ from ..services.pooling.pool_manager import Pool_Manager
 load_dotenv()
 
 COMPUTE             = "http://topcsnova.cloudlab.buet.ac.bd/v2.1"
-NETWORK             = "http://topcsneutron.cloudlab.buet.ac.bd"      # Neutron base URL
+NETWORK             = "http://topcsneutron.cloudlab.buet.ac.bd/v2.0"      # Neutron base URL
 EXTERNAL_NETWORK_ID = os.getenv("EXTERNAL_NETWORK_ID")    # External network for floating IPs
 x_auth_token        = str(os.getenv("openstack_token"))
 
@@ -179,36 +178,24 @@ def finalize_vm(self, openstack_vm_id: str):
             return
 
         port_id = ports[0]["id"]
+        print(f"[finalize_vm] port_id={port_id}")
 
-        # Step 4: Get or create a floating IP
-        # Reuse an unattached one if available, otherwise allocate a new one
-        fips_response    = await get_floating_ips(NETWORK, x_auth_token)
-        fips             = fips_response.get("floatingips", [])
-        floating_ip_id   = None
-        floating_ip_addr = None
+        # Step 4: Always create a new floating IP
+        fip_payload = {
+            "floatingip": {
+                "floating_network_id": EXTERNAL_NETWORK_ID,
+                "description":        f"vdi-pool-{openstack_vm_id[:8]}",
+            }
+        }
+        new_fip = await create_floating_ip(NETWORK, x_auth_token, fip_payload)
+        fip_obj = new_fip.get("floatingip", {})
 
-        for fip in fips:
-            if not fip.get("port_id"):   # unattached floating IP
-                floating_ip_id   = fip["id"]
-                floating_ip_addr = fip["floating_ip_address"]
-                break
+        floating_ip_id   = fip_obj.get("id")
+        floating_ip_addr = fip_obj.get("floating_ip_address")
 
         if not floating_ip_id:
-            fip_payload = {
-                "floatingip": {
-                    "floating_network_id": EXTERNAL_NETWORK_ID,
-                    "description":        f"vdi-pool-{openstack_vm_id[:8]}",
-                }
-            }
-            new_fip = await create_floating_ip(NETWORK, x_auth_token, fip_payload)
-            fip_obj = new_fip.get("floatingip", {})
-
-            floating_ip_id   = fip_obj.get("id")
-            floating_ip_addr = fip_obj.get("floating_ip_address")
-
-            if not floating_ip_id:
-                await _mark_error(openstack_vm_id, "Failed to allocate floating IP")
-                return
+            await _mark_error(openstack_vm_id, "Failed to allocate floating IP")
+            return
 
         # Step 5: Attach the floating IP to the VM's port
         attach_payload  = {"floatingip": {"port_id": port_id}}

@@ -26,7 +26,7 @@ from ..logic.network import (
 
 router = APIRouter()
 
-NETWORK = "http://topcsneutron.cloudlab.buet.ac.bd"
+NETWORK = "http://topcsneutron.cloudlab.buet.ac.bd/v2.0"
 
 
 @router.get("/networks")
