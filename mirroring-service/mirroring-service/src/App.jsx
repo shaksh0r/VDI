@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import "./styles.css";
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+const PROVISIONING_URL = "http://localhost:8000/provision"; // replace with actual provisioning service URL
+
 // ── Guacamole instruction parser ──────────────────────────────────────────────
 function parseInstructions(data) {
   var results = [];
@@ -61,7 +64,7 @@ function RawTunnel(wsUrl) {
   };
 
   this.connect = function (data) {
-    var url = wsUrl + (data ? "?" + data : "");
+    var url = wsUrl + (data ? "&" + data : "");
     self.setState(window.Guacamole.Tunnel.State.CONNECTING);
 
     socket = new WebSocket(url, "guacamole");
@@ -113,8 +116,6 @@ function RawTunnel(wsUrl) {
     }
   };
 }
-//RawTunnel.prototype = Object.create(window.Guacamole.Tunnel.prototype);
-//RawTunnel.prototype.constructor = RawTunnel;
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
@@ -141,18 +142,33 @@ export default function App() {
     if (ok) setShowPlaceholder(false);
   }, []);
 
+  // ── Token helpers ───────────────────────────────────────────────────────────
+
+  function getToken() {
+    return localStorage.getItem("token") || "";
+  }
+
+  // ── URL builders ────────────────────────────────────────────────────────────
+
   function buildTunnelUrl() {
+    // Token is passed as a query param because WebSocket connections from the
+    // browser cannot send custom headers. The mirroring service extracts it,
+    // calls /auth/me to resolve the user, then looks up their assigned VM IP.
     var proto = location.protocol === "https:" ? "wss" : "ws";
-    return proto + "://" + location.host + "/ws/guacd";
+    var token = getToken();
+    return proto + "://" + location.host + "/ws/guacd?token=" + encodeURIComponent(token);
   }
 
   function buildConnectParam() {
+    // These are appended after the token in the WS URL by RawTunnel.connect().
     var el = displayRef.current;
     var width = (el && el.clientWidth) || window.innerWidth || 1280;
     var height = (el && el.clientHeight) || window.innerHeight || 720;
     var dpi = Math.round((window.devicePixelRatio || 1) * 96);
     return "width=" + width + "&height=" + height + "&dpi=" + dpi;
   }
+
+  // ── Display helpers ─────────────────────────────────────────────────────────
 
   function fitDisplay(c) {
     var display = c.getDisplay();
@@ -166,6 +182,8 @@ export default function App() {
     display.scale(scale);
     if (el) el.style.height = Math.round(remoteHeight * scale) + "px";
   }
+
+  // ── Input handlers ──────────────────────────────────────────────────────────
 
   function attachInputHandlers(c) {
     var el = c.getDisplay().getElement();
@@ -196,14 +214,44 @@ export default function App() {
     }
   }
 
-  function fetchSession() {
-    return fetch("/api/session")
-      .then(function (r) { return r.json(); })
-      .then(function (payload) {
-        if (!payload.ok) throw new Error(payload.detail || "No active session");
-        return payload.connection;
+  // ── Provisioning calls ──────────────────────────────────────────────────────
+
+  function provisionConnect() {
+    // Calls the provisioning service to claim a VM from the pool.
+    // Returns the floating IP on success so we can display it in the session bar.
+    var token = getToken();
+    return fetch(PROVISIONING_URL + "/provision/connect", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+    }).then(function (r) {
+      return r.json().then(function (body) {
+        if (!r.ok) {
+          throw new Error(body.detail || "Provisioning failed");
+        }
+        return body; // { ok, floating_ip, instance_id, session_expires_in_minutes }
       });
+    });
   }
+
+  function provisionDisconnect() {
+    // Tells the provisioning service to release the VM back to the pool.
+    // Fire-and-forget — we don't block the UI on the response.
+    var token = getToken();
+    fetch(PROVISIONING_URL + "/provision/disconnect", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+    }).catch(function (err) {
+      console.warn("[provision] disconnect call failed:", err);
+    });
+  }
+
+  // ── Connect ─────────────────────────────────────────────────────────────────
 
   function connect() {
     if (!window.Guacamole) {
@@ -213,15 +261,23 @@ export default function App() {
 
     RawTunnel.prototype = Object.create(window.Guacamole.Tunnel.prototype);
     RawTunnel.prototype.constructor = RawTunnel;
-    setStatus("Checking session...", false);
 
-    fetchSession()
-      .then(function (connection) {
+    var token = getToken();
+    if (!token) {
+      setStatus("Not logged in", false);
+      return;
+    }
+
+    setStatus("Requesting VM...", false);
+
+    provisionConnect()
+      .then(function (provision) {
+        // VM assigned — show it in the session bar
         setSessionText(
-          (connection.protocol || "RDP").toUpperCase() +
-          " @ " +
-          (connection.host || connection.hostname || "unknown host")
+          "RDP @ " + provision.floating_ip +
+          "  (expires in " + provision.session_expires_in_minutes + " min)"
         );
+        setStatus("Connecting...", false);
       })
       .catch(function (err) {
         setSessionText("No session assigned.");
@@ -229,6 +285,7 @@ export default function App() {
         return Promise.reject(err);
       })
       .then(function () {
+        // Tear down any existing client
         if (clientRef.current) {
           clientRef.current.disconnect();
           clientRef.current = null;
@@ -238,6 +295,9 @@ export default function App() {
         var el = displayRef.current;
         if (el) el.innerHTML = "";
 
+        // The token is already embedded in the tunnel URL.
+        // buildConnectParam() only adds width/height/dpi, which RawTunnel
+        // appends with '&' (not '?') since '?' is already in the base URL.
         var tunnelUrl = buildTunnelUrl();
         var connectParam = buildConnectParam();
 
@@ -277,7 +337,10 @@ export default function App() {
       .catch(function () { });
   }
 
+  // ── Disconnect ──────────────────────────────────────────────────────────────
+
   function disconnect() {
+    // 1. Disconnect the Guacamole client (closes WebSocket)
     if (clientRef.current) {
       clientRef.current.disconnect();
       clientRef.current = null;
@@ -289,7 +352,13 @@ export default function App() {
 
     setShowPlaceholder(true);
     setStatus("Disconnected", false);
+    setSessionText("No active session");
+
+    // 2. Tell the provisioning service to release the VM back to the pool
+    provisionDisconnect();
   }
+
+  // ── Resize handler ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     function onResize() {
@@ -298,6 +367,8 @@ export default function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <div className="shell">

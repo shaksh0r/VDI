@@ -18,9 +18,8 @@ logger = logging.getLogger(__name__)
 #  Environment
 # ─────────────────────────────────────────────────────────────────────────────
 
-POOL_NAME          = "pool_1"
-AUTH_SERVICE_URL   = os.getenv("AUTH_SERVICE_URL",      "http://localhost:8001")
-MIRRORING_BASE_URL = os.getenv("MIRRORING_SERVICE_URL", "http://localhost:8000")
+POOL_NAME        = "pool_1"
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8001")
 
 router = APIRouter(prefix="/provision", tags=["provisioning"])
 
@@ -125,30 +124,6 @@ _expiry_tasks: dict[str, asyncio.Task] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Mirroring service notification
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _notify_mirroring_service(user_id: str, floating_ip: str) -> None:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.post(
-                f"{MIRRORING_BASE_URL}/internal/assign",
-                json={"user_id": user_id, "vm_ip": floating_ip},
-            )
-            resp.raise_for_status()
-            logger.info(
-                "Mirroring service notified: user=%s ip=%s",
-                user_id, floating_ip,
-            )
-        except httpx.HTTPError as exc:
-            logger.error("Failed to notify mirroring service: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Could not reach mirroring service",
-            )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  Routes
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -164,9 +139,8 @@ async def connect(
     1. Validates token via auth service
     2. Checks pool_1 is active
     3. Atomically claims a ready VM (FOR UPDATE SKIP LOCKED)
-    4. Notifies mirroring service of the VM IP
-    5. Starts session expiry watcher
-    6. Returns floating IP to frontend
+    4. Starts session expiry watcher
+    5. Returns floating IP to frontend
     """
 
     token   = _extract_bearer_token(authorization, x_auth_token)
@@ -229,9 +203,6 @@ async def connect(
     floating_ip = str(instance["floating_ip"])
 
     logger.info("VM %s (%s) assigned to user %s", instance_id, floating_ip, user_id)
-
-    # Notify mirroring service
-    await _notify_mirroring_service(user_id, floating_ip)
 
     # Start expiry watcher (cancel any stale one first)
     existing = _expiry_tasks.pop(instance_id, None)

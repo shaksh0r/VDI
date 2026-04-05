@@ -3,6 +3,9 @@ import asyncio
 import logging
 import os
 
+import asyncpg
+import httpx
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,8 +37,13 @@ STATIC_DIR = os.path.join(BASE_DIR, "mirroring-service", "dist")
 GUACD_HOST = os.getenv("GUACD_HOST", "127.0.0.1")
 GUACD_PORT = int(os.getenv("GUACD_PORT", "4822"))
 
-# Target VM / RDP
-VM_HOST     = os.getenv("VM_HOST",     "")
+# Auth service — used to resolve a token to a user_id
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8001")
+
+
+
+# VM credentials — shared across all VMs in the pool
+# The hostname (floating IP) is looked up per-user from the database
 VM_PORT     = os.getenv("VM_PORT",     "3389")
 VM_USERNAME = os.getenv("VM_USERNAME", "")
 VM_PASSWORD = os.getenv("VM_PASSWORD", "")
@@ -43,7 +51,7 @@ VM_PROTOCOL = os.getenv("VM_PROTOCOL", "rdp")
 VM_DOMAIN   = os.getenv("VM_DOMAIN",   "")
 VM_SECURITY = os.getenv("VM_SECURITY", "any")
 
-# Display defaults
+# Display defaults (used as fallback if query params are missing)
 VM_WIDTH  = int(os.getenv("VM_WIDTH",  "1280"))
 VM_HEIGHT = int(os.getenv("VM_HEIGHT", "720"))
 VM_DPI    = int(os.getenv("VM_DPI",    "96"))
@@ -60,8 +68,10 @@ VM_DISABLE_BITMAP_CACHING  = os.getenv("VM_DISABLE_BITMAP_CACHING",  "false")
 VM_CLIENT_NAME             = os.getenv("VM_CLIENT_NAME",             "vdi-mirroring")
 
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-logger.info("  guacd : %s:%s", GUACD_HOST, GUACD_PORT)
-logger.info("  VM    : %s:%s  protocol=%s", VM_HOST or "⚠ NOT SET", VM_PORT, VM_PROTOCOL)
+logger.info("  guacd        : %s:%s", GUACD_HOST, GUACD_PORT)
+logger.info("  auth service : %s", AUTH_SERVICE_URL)
+logger.info("  VM port      : %s  protocol=%s", VM_PORT, VM_PROTOCOL)
+logger.info("  (VM host resolved per-user from database)")
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
@@ -340,26 +350,75 @@ class AsyncGuacamoleClient:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
+#  Auth helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _missing_vars() -> list[str]:
-    """Return list of required env var names that are not set."""
-    required = {
-        "VM_HOST":     VM_HOST,
-        "VM_USERNAME": VM_USERNAME,
-        "VM_PASSWORD": VM_PASSWORD,
-    }
-    return [k for k, v in required.items() if not v]
+async def _resolve_token(token: str) -> dict:
+    """
+    Call GET /auth/me on the auth service to validate the token.
+    Returns { user_id, username, role, expires_at } on success.
+    Raises ValueError on invalid/expired token or if the auth service is down.
+    We use ValueError (not HTTPException) so the WebSocket handler can
+    close with a proper code instead of raising an unhandled exception.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{AUTH_SERVICE_URL}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            logger.error("Auth service unreachable: %s", exc)
+            raise ValueError("Auth service unreachable")
+
+    if resp.status_code == 401:
+        raise ValueError("Invalid or expired token")
+    if resp.status_code != 200:
+        raise ValueError(f"Unexpected auth service response: {resp.status_code}")
+
+    return resp.json()
 
 
-async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamoleClient:
+# ─────────────────────────────────────────────────────────────────────────────
+#  Database helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_assigned_vm_ip(user_id: str, db: asyncpg.Connection) -> str:
+    """
+    Look up the floating IP of the VM currently assigned to this user.
+    Raises ValueError if no active assignment is found.
+    """
+    row = await db.fetchrow(
+        """
+        SELECT floating_ip
+        FROM desktop_instances
+        WHERE assigned_user_id = $1
+          AND status           = 'in_use'
+        """,
+        user_id,
+    )
+    if not row:
+        raise ValueError(f"No active VM assignment found for user {user_id}")
+    return str(row["floating_ip"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  guacd client factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _make_guac_client(
+    vm_host: str,
+    width: int,
+    height: int,
+    dpi: int,
+) -> AsyncGuacamoleClient:
     """
     Create, connect, and fully handshake an AsyncGuacamoleClient.
-    Raises ValueError if required env vars are missing.
-    Raises ConnectionError if guacd handshake fails.
+    vm_host is the floating IP resolved from the database for this user.
+    Raises ValueError if shared credentials are missing.
+    Raises ConnectionError if the guacd handshake fails.
     """
-    missing = _missing_vars()
+    missing = [k for k, v in {"VM_USERNAME": VM_USERNAME, "VM_PASSWORD": VM_PASSWORD}.items() if not v]
     if missing:
         raise ValueError(f"Missing required env vars: {', '.join(missing)}")
 
@@ -367,7 +426,7 @@ async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamole
     await client.connect()
     await client.handshake(
         protocol                   = VM_PROTOCOL,
-        hostname                   = VM_HOST,
+        hostname                   = vm_host,
         port                       = VM_PORT,
         username                   = VM_USERNAME,
         password                   = VM_PASSWORD,
@@ -391,6 +450,27 @@ async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamole
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Lifespan — DB pool
+# ─────────────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.db_pool = await asyncpg.create_pool(
+    user=os.getenv("DB_USER", "myuser"),
+    password=os.getenv("DB_PASSWORD", "mypassword"),
+    database=os.getenv("DB_NAME", "mydatabase"),
+    host=os.getenv("DB_HOST", "localhost"),
+    port=int(os.getenv("DB_PORT", "5432")),
+    min_size=10,
+    max_size=20,
+    )
+    logger.info("Database pool created")
+    yield
+    await app.state.db_pool.close()
+    logger.info("Database pool closed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  FastAPI Application
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -398,6 +478,7 @@ app = FastAPI(
     title       = "VDI Mirror",
     description = "VM desktop mirroring via Apache Guacamole protocol + FastAPI",
     version     = "1.0.0",
+    lifespan    = lifespan,
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -423,7 +504,6 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 app.add_middleware(NoCacheStaticMiddleware)
 
 # ── Static files ──────────────────────────────────────────────────────────────
-# Vite outputs hashed JS/CSS into dist/assets/ — serve that directory.
 app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
 
 
@@ -441,13 +521,20 @@ async def guac_js() -> FileResponse:
     """Serve the Guacamole JS library (copied to dist/ by Vite from public/)."""
     return FileResponse(os.path.join(STATIC_DIR, "guacamole-common-js.min.js"))
 
+
 @app.get("/api/health")
 async def health_check():
     """
     Returns server configuration status.
-    Use this to verify env vars are set before attempting a connection.
+    VM_HOST is intentionally absent — it is resolved per-user from the database.
     """
-    missing = _missing_vars()
+    missing = [
+        k for k, v in {
+            "VM_USERNAME": VM_USERNAME,
+            "VM_PASSWORD": VM_PASSWORD,
+        }.items()
+        if not v
+    ]
     if missing:
         return {
             "ok":     False,
@@ -459,43 +546,10 @@ async def health_check():
         "status":      "ready",
         "guacd_host":  GUACD_HOST,
         "guacd_port":  GUACD_PORT,
-        "vm_host":     VM_HOST,
         "vm_port":     VM_PORT,
         "vm_protocol": VM_PROTOCOL,
         "vm_security": VM_SECURITY,
         "vm_domain":   VM_DOMAIN or None,
-    }
-
-
-
-
-@app.get("/api/session")
-async def get_session():
-    """
-    Returns the active connection profile for the frontend.
-    The frontend calls this before initiating a WebSocket connection
-    to display session info and confirm configuration is valid.
-    """
-    missing = _missing_vars()
-    if missing:
-        raise HTTPException(
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail      = f"Server misconfigured — missing: {', '.join(missing)}",
-        )
-    return {
-        "ok": True,
-        "connection": {
-            "host":           VM_HOST,
-            "port":           VM_PORT,
-            "protocol":       VM_PROTOCOL,
-            "username":       VM_USERNAME,
-            "password_set":   bool(VM_PASSWORD),
-            "domain":         VM_DOMAIN or None,
-            "security":       VM_SECURITY,
-            "default_width":  VM_WIDTH,
-            "default_height": VM_HEIGHT,
-            "default_dpi":    VM_DPI,
-        },
     }
 
 
@@ -513,29 +567,20 @@ async def guacd_tunnel(websocket: WebSocket):
     │ (JS)    │   subprotocol="guacamole"    │ server │   raw instructions  │         │
     └─────────┘                              └────────┘                     └─────────┘
 
-    Key design decisions:
-    ─────────────────────
-    1. subprotocol="guacamole" in websocket.accept()
-       The Guacamole JS lib opens: new WebSocket(url, "guacamole")
-       FastAPI MUST echo this subprotocol or the browser closes immediately.
-
-    2. Fully async TCP via asyncio.open_connection()
-       No blocking sockets, no run_in_executor, no thread pool contention.
-
-    3. "3.nop;" filter in browser→guacd direction
-       Guacamole JS sends periodic nop keepalives over WebSocket.
-       These must NOT be forwarded to guacd — guacd does not expect them.
-
-    4. disconnect() before close()
-       Sends "10.disconnect;" to guacd before closing TCP.
-       Prevents: WARNING: Guacamole connection failure: Error filling instruction buffer
-
     URL format:
-        ws://host/ws/guacd?width=868&height=420&dpi=96
+        ws://host/ws/guacd?token=<jwt>&width=1280&height=720&dpi=96
+
+    Auth + VM resolution flow:
+        1. Extract token from query params
+        2. Call /auth/me to get user_id
+        3. Look up floating_ip from desktop_instances for that user_id
+        4. Pass floating_ip into guacd handshake
     """
 
-    # ── Step 1: Parse viewport from URL query params ──────────────────────
+    # ── Step 1: Parse query params ────────────────────────────────────────
     params = dict(websocket.query_params)
+    token  = params.get("token", "").strip()
+
     try:
         width  = int(params.get("width",  VM_WIDTH))
         height = int(params.get("height", VM_HEIGHT))
@@ -544,36 +589,57 @@ async def guacd_tunnel(websocket: WebSocket):
         width, height, dpi = VM_WIDTH, VM_HEIGHT, VM_DPI
 
     # ── Step 2: Accept WebSocket with "guacamole" subprotocol ────────────
-    # REQUIRED: Guacamole JS requests this subprotocol explicitly.
-    # Without it the browser's WebSocket object closes immediately (code 1006).
+    # MUST accept before sending any close frame.
     await websocket.accept(subprotocol="guacamole")
-    logger.info(
-        "WS accepted  viewport=%dx%d @%ddpi  client=%s",
-        width, height, dpi, websocket.client,
-    )
 
-    # ── Step 3: Validate environment before proceeding ────────────────────
-    missing = _missing_vars()
-    if missing:
-        reason = f"Server misconfigured: missing {', '.join(missing)}"
-        logger.error(reason)
-        await websocket.close(code=1011, reason=reason)
+    # ── Step 3: Validate token ────────────────────────────────────────────
+    if not token:
+        logger.warning("WS rejected: no token provided")
+        await websocket.close(code=1008, reason="Missing token")
         return
 
-    # ── Step 4: Perform async Guacamole handshake with guacd ─────────────
+    try:
+        user = await _resolve_token(token)
+    except ValueError as exc:
+        logger.warning("WS rejected: %s", exc)
+        await websocket.close(code=1008, reason=str(exc))
+        return
+
+    user_id = user["user_id"]
+    logger.info(
+        "WS accepted  user=%s  viewport=%dx%d @%ddpi  client=%s",
+        user_id, width, height, dpi, websocket.client,
+    )
+
+    # ── Step 4: Look up the user's assigned VM IP from the database ───────
+    try:
+        async with websocket.app.state.db_pool.acquire() as db:
+            vm_host = await _get_assigned_vm_ip(user_id, db)
+    except ValueError as exc:
+        logger.warning("WS rejected: %s", exc)
+        await websocket.close(code=1008, reason="No active VM session. Please connect first.")
+        return
+    except Exception as exc:
+        logger.error("DB error resolving VM for user %s: %s", user_id, exc)
+        await websocket.close(code=1011, reason="Internal server error")
+        return
+
+    logger.info("Resolved VM  user=%s  vm_host=%s", user_id, vm_host)
+
+    # ── Step 5: Perform async Guacamole handshake with guacd ─────────────
     guac_client: AsyncGuacamoleClient | None = None
     try:
-        guac_client = await _make_guac_client(width, height, dpi)
+        guac_client = await _make_guac_client(vm_host, width, height, dpi)
         logger.info(
             "guacd handshake OK ✅  vm=%s:%s  viewport=%dx%d",
-            VM_HOST, VM_PORT, width, height,
+            vm_host, VM_PORT, width, height,
         )
     except Exception as exc:
         logger.error("guacd handshake failed: %s", exc)
         await websocket.close(code=1011, reason="guacd handshake failed")
         return
 
-    # ── Step 5: Bidirectional async relay ─────────────────────────────────
+    # ── Step 6: Bidirectional async relay ─────────────────────────────────
 
     async def browser_to_guacd() -> None:
         """
@@ -598,7 +664,6 @@ async def guacd_tunnel(websocket: WebSocket):
         except Exception as exc:
             logger.warning("browser→guacd error: %s", exc)
 
-
     async def guacd_to_browser() -> None:
         """
         Forward: guacd ──► browser
@@ -621,7 +686,7 @@ async def guacd_tunnel(websocket: WebSocket):
     # Launch both relay tasks concurrently.
     # When EITHER side closes (browser navigates away OR guacd terminates),
     # asyncio.wait returns and we shut down the other side cleanly.
-    logger.info("Relay started ▶  viewport=%dx%d", width, height)
+    logger.info("Relay started ▶  user=%s  vm=%s  viewport=%dx%d", user_id, vm_host, width, height)
 
     task_b2g = asyncio.create_task(browser_to_guacd(), name="browser→guacd")
     task_g2b = asyncio.create_task(guacd_to_browser(), name="guacd→browser")
@@ -632,8 +697,8 @@ async def guacd_tunnel(websocket: WebSocket):
             return_when=asyncio.FIRST_COMPLETED,
         )
         logger.info(
-            "Relay ended ■  finished=%s",
-            [t.get_name() for t in done],
+            "Relay ended ■  user=%s  vm=%s  finished=%s",
+            user_id, vm_host, [t.get_name() for t in done],
         )
 
     finally:
@@ -653,7 +718,7 @@ async def guacd_tunnel(websocket: WebSocket):
         if guac_client is not None:
             await guac_client.disconnect()
             await guac_client.close()
-            logger.info("guacd connection closed cleanly")
+            logger.info("guacd connection closed cleanly  user=%s", user_id)
 
 
 @app.get("/{full_path:path}", include_in_schema=False)
