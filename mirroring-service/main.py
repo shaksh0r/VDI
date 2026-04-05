@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+STATIC_DIR = os.path.join(BASE_DIR, "mirroring-service", "dist")
 
 # guacd
 GUACD_HOST = os.getenv("GUACD_HOST", "127.0.0.1")
@@ -413,7 +413,7 @@ app.add_middleware(
 class NoCacheStaticMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/static/") and \
+        if request.url.path.startswith("/assets/") and \
            request.url.path.endswith((".js", ".css")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"]         = "no-cache"
@@ -423,7 +423,8 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 app.add_middleware(NoCacheStaticMiddleware)
 
 # ── Static files ──────────────────────────────────────────────────────────────
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Vite outputs hashed JS/CSS into dist/assets/ — serve that directory.
+app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -432,9 +433,13 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    """Serve the VDI Mirror frontend."""
+    """Serve the React SPA entry point."""
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
+@app.get("/guacamole-common-js.min.js", include_in_schema=False)
+async def guac_js() -> FileResponse:
+    """Serve the Guacamole JS library (copied to dist/ by Vite from public/)."""
+    return FileResponse(os.path.join(STATIC_DIR, "guacamole-common-js.min.js"))
 
 @app.get("/api/health")
 async def health_check():
@@ -460,6 +465,8 @@ async def health_check():
         "vm_security": VM_SECURITY,
         "vm_domain":   VM_DOMAIN or None,
     }
+
+
 
 
 @app.get("/api/session")
@@ -647,3 +654,9 @@ async def guacd_tunnel(websocket: WebSocket):
             await guac_client.disconnect()
             await guac_client.close()
             logger.info("guacd connection closed cleanly")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str) -> FileResponse:
+    """Catch-all: serve index.html for any unmatched path (SPA routing)."""
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
