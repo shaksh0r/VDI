@@ -1,0 +1,22 @@
+{
+  "lab_title": "VDI access code dry run",
+  "pool_name": "pool_mail_test_2026",
+  "portal_url": "https://vdi.vditeam.com",
+  "students": [
+    {
+      "email": "zsaif2003@gmail.com",
+      "student_id": "USR-1001",
+      "full_name": "Z. Saif"
+    },
+    {
+      "email": "g.schatten69@gmail.com",
+      "student_id": "USR-1002",
+      "full_name": "G. Schatten"
+    },
+    {
+      "email": "maestroschatten@gmail.com",
+      "student_id": "USR-1003",
+      "full_name": "Maestro Schatten"
+    }
+  ]
+}

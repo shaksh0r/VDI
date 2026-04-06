@@ -14,6 +14,13 @@ Run a test from the repo root (with .env or env vars set):
 Hello-world test (same shape as Resend onboarding docs; reads recipient emails from JSON):
 
   python -m notifications.resend_mail --hello-test notifications/sample_email_recipients.json
+
+Send a unique 6-digit access code to each person in a lab-style JSON (``students[]``):
+
+  python -m notifications.resend_mail --send-codes notifications/sample_access_codes_batch.json
+
+Dev HTTP upload (no auth): ``uvicorn notifications.roster_upload_app:app --port 8020`` from repo root, then
+``POST /send-codes`` with multipart field ``file`` = JSON body (same shape as the sample file).
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import html
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Optional
 
@@ -48,6 +56,26 @@ def _require_env(name: str) -> str:
     return value
 
 
+_RESEND_ONBOARDING_FROM = "onboarding@resend.dev"
+_UNVERIFIED_FROM_DOMAIN = "cloudlab.buet.ac.bd"
+
+
+def _effective_resend_from() -> str:
+    """
+    ``RESEND_FROM`` must still be set (e.g. for production), but if it uses an unverified
+    lab hostname we substitute Resend's onboarding sender so local tests do not fail API-side.
+    """
+    raw = _require_env("RESEND_FROM")
+    if _UNVERIFIED_FROM_DOMAIN in raw.lower():
+        logger.warning(
+            "RESEND_FROM uses %s (not verified in Resend); sending as %s",
+            _UNVERIFIED_FROM_DOMAIN,
+            _RESEND_ONBOARDING_FROM,
+        )
+        return _RESEND_ONBOARDING_FROM
+    return raw
+
+
 def _configure_client() -> None:
     resend.api_key = _require_env("RESEND_API_KEY")
 
@@ -66,7 +94,7 @@ def send_raw_email(
     ``to`` may be a single address or a list (Resend supports multiple recipients).
     """
     _configure_client()
-    from_addr = _require_env("RESEND_FROM")
+    from_addr = _effective_resend_from()
 
     params: resend.Emails.SendParams = {
         "from": from_addr,
@@ -123,7 +151,7 @@ def send_hello_world_test(*, to: str | list[str]) -> str:
     Uses RESEND_API_KEY and RESEND_FROM from the environment.
     """
     _configure_client()
-    from_addr = _require_env("RESEND_FROM")
+    from_addr = _effective_resend_from()
     params: resend.Emails.SendParams = {
         "from": from_addr,
         "to": to,
@@ -138,6 +166,80 @@ def send_hello_world_test(*, to: str | list[str]) -> str:
     if not response or not getattr(response, "id", None):
         raise ResendMailError("Resend returned no message id")
     return str(response.id)
+
+
+def _generate_unique_six_digit_codes(n: int) -> list[str]:
+    if n < 1:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    while len(out) < n:
+        c = f"{secrets.randbelow(1_000_000):06d}"
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def students_from_lab_json(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse ``students`` entries with at least ``email`` for batch access-code sends."""
+    students = data.get("students")
+    if not isinstance(students, list) or not students:
+        raise ResendMailError("JSON must contain a non-empty 'students' array")
+    rows: list[dict[str, Any]] = []
+    for s in students:
+        if not isinstance(s, dict):
+            continue
+        email = (s.get("email") or "").strip()
+        if not email:
+            continue
+        fn = (s.get("full_name") or "").strip()
+        rows.append(
+            {
+                "email": email,
+                "full_name": fn or None,
+            }
+        )
+    if not rows:
+        raise ResendMailError("No valid student rows with 'email' in JSON")
+    return rows
+
+
+def send_access_codes_from_lab_data(raw: dict[str, Any]) -> list[dict[str, str]]:
+    """
+    Parse lab JSON (already loaded), assign unique 6-digit codes, email each student.
+
+    Returns a list of dicts with ``email``, ``code``, ``resend_id`` (for logging / audit).
+    """
+    if not isinstance(raw, dict):
+        raise ResendMailError("JSON root must be an object")
+    students = students_from_lab_json(raw)
+    lab_title = raw.get("lab_title")
+    lab_title_str = lab_title.strip() if isinstance(lab_title, str) and lab_title.strip() else None
+    portal = raw.get("portal_url")
+    portal_str = portal.strip() if isinstance(portal, str) and portal.strip() else None
+
+    codes = _generate_unique_six_digit_codes(len(students))
+    results: list[dict[str, str]] = []
+    for row, code in zip(students, codes, strict=True):
+        mid = send_access_code_email(
+            row["email"],
+            code,
+            full_name=row["full_name"],
+            lab_title=lab_title_str,
+            portal_url=portal_str,
+        )
+        results.append({"email": row["email"], "code": code, "resend_id": mid})
+        logger.info("Sent access code to %s (Resend id %s)", row["email"], mid)
+    return results
+
+
+def send_access_codes_from_lab_json(path: Path) -> list[dict[str, str]]:
+    """Load lab JSON from disk; see ``send_access_codes_from_lab_data``."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ResendMailError("JSON root must be an object")
+    return send_access_codes_from_lab_data(raw)
 
 
 def send_access_code_email(
@@ -208,6 +310,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Send a test access-code email via Resend")
     parser.add_argument("--hello-test", metavar="JSON", help="Send Resend onboarding-style Hello World to emails in JSON")
+    parser.add_argument(
+        "--send-codes",
+        metavar="JSON",
+        help="Lab JSON with students[]: generate unique 6-digit codes and email each student",
+    )
     parser.add_argument("--to", help="Recipient email (not used with --hello-test)")
     parser.add_argument("--code", default="123456", help="6-digit code (default 123456)")
     parser.add_argument("--name", default=None, help="Student display name")
@@ -225,8 +332,17 @@ def main() -> None:
         print(f"Sent to {len(recipients)} address(es). Resend id: {mid}")
         return
 
+    if args.send_codes:
+        path = Path(args.send_codes)
+        try:
+            results = send_access_codes_from_lab_json(path)
+        except ResendMailError as e:
+            raise SystemExit(str(e)) from e
+        print(json.dumps({"sent": results}, indent=2))
+        return
+
     if not args.to:
-        parser.error("--to is required unless --hello-test is used")
+        parser.error("--to is required unless --hello-test or --send-codes is used")
 
     mid = send_access_code_email(
         args.to,

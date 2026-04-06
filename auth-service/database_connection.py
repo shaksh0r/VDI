@@ -1,6 +1,14 @@
 import os
+from pathlib import Path
 
 import asyncpg
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+except ImportError:
+    pass
 from fastapi import Request
 
 
