@@ -10,7 +10,7 @@ import json
 celery.conf.beat_schedule = {
     "run-every-5-seconds":{
         "task":"tasks.pool_generator",
-        "schedule":30.0,
+        "schedule":20.0,
         "args":()
     }
 }
