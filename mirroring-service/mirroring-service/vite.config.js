@@ -9,11 +9,13 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      '/api': 'http://mirroring:8000',
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://mirroring:8000',
         ws: true,
       },
+      '/auth': 'http://auth-service:8003',
+      '/provision': 'http://provisioning-server:8001',
     }
   }
 })

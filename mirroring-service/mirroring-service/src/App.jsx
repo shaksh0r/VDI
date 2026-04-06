@@ -1,124 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import "./styles.css";
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-const PROVISIONING_URL = "http://localhost:8000/provision"; // replace with actual provisioning service URL
-
-// ── Guacamole instruction parser ──────────────────────────────────────────────
-function parseInstructions(data) {
-  var results = [];
-  var pos = 0;
-  var len = data.length;
-
-  while (pos < len) {
-    var elements = [];
-    var complete = false;
-
-    while (pos < len) {
-      var dotPos = data.indexOf(".", pos);
-      if (dotPos === -1) return results;
-
-      var elemLen = parseInt(data.substring(pos, dotPos), 10);
-      if (isNaN(elemLen)) return results;
-
-      var valStart = dotPos + 1;
-      var valEnd = valStart + elemLen;
-
-      if (valEnd > len) return results;
-
-      elements.push(data.substring(valStart, valEnd));
-
-      var terminator = data.charAt(valEnd);
-      pos = valEnd + 1;
-
-      if (terminator === ";") {
-        complete = true;
-        break;
-      }
-      if (terminator !== ",") return results;
-    }
-
-    if (complete && elements.length > 0) {
-      results.push({ opcode: elements[0], args: elements.slice(1) });
-    }
-  }
-
-  return results;
-}
-
-// ── RawTunnel ─────────────────────────────────────────────────────────────────
-function RawTunnel(wsUrl) {
-  window.Guacamole.Tunnel.call(this);
-  var self = this;
-  var socket = null;
-
-  this.sendMessage = function () {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    if (arguments.length === 0) return;
-    var parts = [];
-    for (var i = 0; i < arguments.length; i++) {
-      var val = String(arguments[i]);
-      parts.push(val.length + "." + val);
-    }
-    socket.send(parts.join(",") + ";");
-  };
-
-  this.connect = function (data) {
-    var url = wsUrl + (data ? "&" + data : "");
-    self.setState(window.Guacamole.Tunnel.State.CONNECTING);
-
-    socket = new WebSocket(url, "guacamole");
-
-    socket.onopen = function () {
-      console.log("[RawTunnel] WebSocket open");
-      self.setState(window.Guacamole.Tunnel.State.OPEN);
-    };
-
-    socket.onmessage = function (event) {
-      var instructions = parseInstructions(event.data);
-      for (var i = 0; i < instructions.length; i++) {
-        var instr = instructions[i];
-        if (self.oninstruction) {
-          self.oninstruction(instr.opcode, instr.args);
-        }
-      }
-    };
-
-    socket.onerror = function (event) {
-      console.error("[RawTunnel] WebSocket error", event);
-      if (self.onerror) {
-        self.onerror(
-          new window.Guacamole.Status(
-            window.Guacamole.Status.Code.SERVER_ERROR,
-            "WebSocket error"
-          )
-        );
-      }
-      self.setState(window.Guacamole.Tunnel.State.CLOSED);
-    };
-
-    socket.onclose = function (event) {
-      console.log(
-        "[RawTunnel] closed  code=" +
-        event.code +
-        "  reason=" +
-        (event.reason || "(none)")
-      );
-      self.setState(window.Guacamole.Tunnel.State.CLOSED);
-    };
-  };
-
-  this.disconnect = function () {
-    self.setState(window.Guacamole.Tunnel.State.CLOSED);
-    if (socket) {
-      socket.close();
-      socket = null;
-    }
-  };
-}
-
 // ── Main App ──────────────────────────────────────────────────────────────────
-export default function App() {
+export default function App({ onLogout }) {
   const [statusText, setStatusText] = useState("Disconnected");
   const [statusOk, setStatusOk] = useState(false);
   const [sessionText, setSessionText] = useState("No active session");
@@ -130,7 +14,6 @@ export default function App() {
   const keyboardRef = useRef(null);
   const mouseRef = useRef(null);
 
-  // Sync body class for CSS selectors targeting body.is-connected
   useEffect(() => {
     document.body.classList.toggle("is-connected", isConnected);
   }, [isConnected]);
@@ -142,25 +25,115 @@ export default function App() {
     if (ok) setShowPlaceholder(false);
   }, []);
 
-  // ── Token helpers ───────────────────────────────────────────────────────────
+  // ── Guacamole instruction parser ────────────────────────────────────────────
+  function parseInstructions(data) {
+    var results = [];
+    var pos = 0;
+    var len = data.length;
 
+    while (pos < len) {
+      var elements = [];
+      var complete = false;
+
+      while (pos < len) {
+        var dotPos = data.indexOf(".", pos);
+        if (dotPos === -1) return results;
+
+        var elemLen = parseInt(data.substring(pos, dotPos), 10);
+        if (isNaN(elemLen)) return results;
+
+        var valStart = dotPos + 1;
+        var valEnd = valStart + elemLen;
+
+        if (valEnd > len) return results;
+
+        elements.push(data.substring(valStart, valEnd));
+
+        var terminator = data.charAt(valEnd);
+        pos = valEnd + 1;
+
+        if (terminator === ";") { complete = true; break; }
+        if (terminator !== ",") return results;
+      }
+
+      if (complete && elements.length > 0) {
+        results.push({ opcode: elements[0], args: elements.slice(1) });
+      }
+    }
+
+    return results;
+  }
+
+  // ── RawTunnel ─────────────────────────────────────────────────────────────
+  function RawTunnel(wsUrl) {
+    window.Guacamole.Tunnel.call(this);
+    var self = this;
+    var socket = null;
+
+    this.sendMessage = function () {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (arguments.length === 0) return;
+      var parts = [];
+      for (var i = 0; i < arguments.length; i++) {
+        var val = String(arguments[i]);
+        parts.push(val.length + "." + val);
+      }
+      socket.send(parts.join(",") + ";");
+    };
+
+    this.connect = function (data) {
+      var url = wsUrl + (data ? "&" + data : "");
+      self.setState(window.Guacamole.Tunnel.State.CONNECTING);
+      socket = new WebSocket(url, "guacamole");
+
+      socket.onopen = function () {
+        console.log("[RawTunnel] WebSocket open");
+        self.setState(window.Guacamole.Tunnel.State.OPEN);
+      };
+
+      socket.onmessage = function (event) {
+        var instructions = parseInstructions(event.data);
+        for (var i = 0; i < instructions.length; i++) {
+          var instr = instructions[i];
+          if (self.oninstruction) self.oninstruction(instr.opcode, instr.args);
+        }
+      };
+
+      socket.onerror = function (event) {
+        console.error("[RawTunnel] WebSocket error", event);
+        if (self.onerror) {
+          self.onerror(new window.Guacamole.Status(
+            window.Guacamole.Status.Code.SERVER_ERROR, "WebSocket error"
+          ));
+        }
+        self.setState(window.Guacamole.Tunnel.State.CLOSED);
+      };
+
+      socket.onclose = function (event) {
+        console.log("[RawTunnel] closed  code=" + event.code + "  reason=" + (event.reason || "(none)"));
+        self.setState(window.Guacamole.Tunnel.State.CLOSED);
+      };
+    };
+
+    this.disconnect = function () {
+      self.setState(window.Guacamole.Tunnel.State.CLOSED);
+      if (socket) { socket.close(); socket = null; }
+    };
+  }
+
+  // ── Token ──────────────────────────────────────────────────────────────────
   function getToken() {
     return localStorage.getItem("token") || "";
   }
 
-  // ── URL builders ────────────────────────────────────────────────────────────
-
+  // ── URL builders ───────────────────────────────────────────────────────────
   function buildTunnelUrl() {
-    // Token is passed as a query param because WebSocket connections from the
-    // browser cannot send custom headers. The mirroring service extracts it,
-    // calls /auth/me to resolve the user, then looks up their assigned VM IP.
     var proto = location.protocol === "https:" ? "wss" : "ws";
     var token = getToken();
     return proto + "://" + location.host + "/ws/guacd?token=" + encodeURIComponent(token);
   }
 
   function buildConnectParam() {
-    // These are appended after the token in the WS URL by RawTunnel.connect().
     var el = displayRef.current;
     var width = (el && el.clientWidth) || window.innerWidth || 1280;
     var height = (el && el.clientHeight) || window.innerHeight || 720;
@@ -168,8 +141,7 @@ export default function App() {
     return "width=" + width + "&height=" + height + "&dpi=" + dpi;
   }
 
-  // ── Display helpers ─────────────────────────────────────────────────────────
-
+  // ── Display ────────────────────────────────────────────────────────────────
   function fitDisplay(c) {
     var display = c.getDisplay();
     var remoteWidth = display.getWidth();
@@ -183,8 +155,7 @@ export default function App() {
     if (el) el.style.height = Math.round(remoteHeight * scale) + "px";
   }
 
-  // ── Input handlers ──────────────────────────────────────────────────────────
-
+  // ── Input handlers ─────────────────────────────────────────────────────────
   function attachInputHandlers(c) {
     var el = c.getDisplay().getElement();
 
@@ -214,13 +185,10 @@ export default function App() {
     }
   }
 
-  // ── Provisioning calls ──────────────────────────────────────────────────────
-
+  // ── Provisioning calls ─────────────────────────────────────────────────────
   function provisionConnect() {
-    // Calls the provisioning service to claim a VM from the pool.
-    // Returns the floating IP on success so we can display it in the session bar.
     var token = getToken();
-    return fetch(PROVISIONING_URL + "/provision/connect", {
+    return fetch("/provision/connect", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + token,
@@ -228,19 +196,15 @@ export default function App() {
       },
     }).then(function (r) {
       return r.json().then(function (body) {
-        if (!r.ok) {
-          throw new Error(body.detail || "Provisioning failed");
-        }
-        return body; // { ok, floating_ip, instance_id, session_expires_in_minutes }
+        if (!r.ok) throw new Error(body.detail || "Provisioning failed");
+        return body;
       });
     });
   }
 
   function provisionDisconnect() {
-    // Tells the provisioning service to release the VM back to the pool.
-    // Fire-and-forget — we don't block the UI on the response.
     var token = getToken();
-    fetch(PROVISIONING_URL + "/provision/disconnect", {
+    fetch("/provision/disconnect", {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + token,
@@ -251,8 +215,7 @@ export default function App() {
     });
   }
 
-  // ── Connect ─────────────────────────────────────────────────────────────────
-
+  // ── Connect ────────────────────────────────────────────────────────────────
   function connect() {
     if (!window.Guacamole) {
       setStatus("Guacamole library not loaded", false);
@@ -272,7 +235,6 @@ export default function App() {
 
     provisionConnect()
       .then(function (provision) {
-        // VM assigned — show it in the session bar
         setSessionText(
           "RDP @ " + provision.floating_ip +
           "  (expires in " + provision.session_expires_in_minutes + " min)"
@@ -285,7 +247,6 @@ export default function App() {
         return Promise.reject(err);
       })
       .then(function () {
-        // Tear down any existing client
         if (clientRef.current) {
           clientRef.current.disconnect();
           clientRef.current = null;
@@ -295,9 +256,6 @@ export default function App() {
         var el = displayRef.current;
         if (el) el.innerHTML = "";
 
-        // The token is already embedded in the tunnel URL.
-        // buildConnectParam() only adds width/height/dpi, which RawTunnel
-        // appends with '&' (not '?') since '?' is already in the base URL.
         var tunnelUrl = buildTunnelUrl();
         var connectParam = buildConnectParam();
 
@@ -311,10 +269,7 @@ export default function App() {
         var displayElem = c.getDisplay().getElement();
         if (el) el.appendChild(displayElem);
 
-        c.getDisplay().onresize = function () {
-          fitDisplay(c);
-        };
-
+        c.getDisplay().onresize = function () { fitDisplay(c); };
         attachInputHandlers(c);
 
         c.onerror = function (err) {
@@ -323,10 +278,7 @@ export default function App() {
         };
 
         c.onstatechange = function (state) {
-          var labels = [
-            "Idle", "Connecting…", "Waiting…",
-            "Connected", "Disconnecting…", "Disconnected",
-          ];
+          var labels = ["Idle", "Connecting…", "Waiting…", "Connected", "Disconnecting…", "Disconnected"];
           var ok = state === 3;
           setStatus(labels[state] || "State " + state, ok);
           if (ok) fitDisplay(c);
@@ -337,10 +289,8 @@ export default function App() {
       .catch(function () { });
   }
 
-  // ── Disconnect ──────────────────────────────────────────────────────────────
-
+  // ── Disconnect ─────────────────────────────────────────────────────────────
   function disconnect() {
-    // 1. Disconnect the Guacamole client (closes WebSocket)
     if (clientRef.current) {
       clientRef.current.disconnect();
       clientRef.current = null;
@@ -354,11 +304,25 @@ export default function App() {
     setStatus("Disconnected", false);
     setSessionText("No active session");
 
-    // 2. Tell the provisioning service to release the VM back to the pool
     provisionDisconnect();
   }
 
-  // ── Resize handler ──────────────────────────────────────────────────────────
+  // ── Logout ─────────────────────────────────────────────────────────────────
+  async function handleLogout() {
+    // Disconnect VM if active
+    if (clientRef.current) disconnect();
+
+    // Revoke token on auth service
+    const token = getToken();
+    if (token) {
+      await fetch("/auth/logout", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token },
+      }).catch(() => { });
+    }
+
+    onLogout();
+  }
 
   useEffect(() => {
     function onResize() {
@@ -367,8 +331,6 @@ export default function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-
-  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <div className="shell">
@@ -399,6 +361,12 @@ export default function App() {
             <span className="status-chip__ring"></span>
             <span className="status-chip__label">{statusText}</span>
           </div>
+          <button className="btn btn--disconnect" onClick={handleLogout} aria-label="Log out">
+            <svg className="btn__icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M5 2H2v8h3M8 4l2 2-2 2M10 6H5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Log out
+          </button>
         </div>
       </header>
 
@@ -450,8 +418,6 @@ export default function App() {
             </p>
           </div>
         )}
-
-        {/* Guacamole mounts its canvas here — must always be in the DOM */}
         <div className="rdp-surface" ref={displayRef}></div>
       </main>
 

@@ -1,0 +1,224 @@
+services:
+
+  database:
+    build:
+      context: ./database
+    container_name: database
+    networks:
+      - app_net
+    ports:
+      - "5432:5432"           # VPN-accessible via host IP; internal via container name
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d mydatabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    networks:
+      - app_net
+    ports:
+      - "5672:5672"           # AMQP — VPN-accessible
+      - "15672:15672"         # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  guacd:
+    image: guacamole/guacd
+    container_name: guacd
+    networks:
+      - app_net
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    dns_search:
+      - cloudlab.tirzokprivatecloud.com
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4822"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mirroring:
+    build:
+      context: ./mirroring-service
+      dockerfile: Dockerfile
+      network: host
+    container_name: mirroring
+    networks:
+      - app_net
+    ports:
+      - "8000:8000"
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    dns_search:
+      - cloudlab.tirzokprivatecloud.com
+    cap_add:
+      - NET_ADMIN
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      guacd:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mirroring-frontend:
+    build:
+      context: "./mirroring-service/mirroring-service"
+      dockerfile: Dockerfile.frontend
+      network: host
+    container_name: mirroring-frontend
+    networks:
+      - app_net
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+  
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+      network: host
+    container_name: auth-service
+    networks:
+      - app_net
+    ports:
+      - "8003:8003"
+    cap_add:
+      - NET_ADMIN
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  provisioning-server:
+    build:
+      context: .
+      dockerfile: provisioning_service/Dockerfile
+    container_name: provisioning-server
+    command: >
+      uvicorn provisioning_service.server:app
+      --host 0.0.0.0
+      --port 8001
+    networks:
+      - app_net
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    dns_search:
+      - cloudlab.tirzokprivatecloud.com
+    ports:
+      - "8001:8001"
+    cap_add:
+      - NET_ADMIN
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  provisioning-worker:
+    build:
+      context: .
+      dockerfile: provisioning_service/Dockerfile
+    container_name: provisioning-worker
+    command: >
+      celery -A provisioning_service.message_queue.celery_app worker
+      --loglevel=info
+    networks:
+      - app_net
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    dns_search:
+      - cloudlab.tirzokprivatecloud.com
+    cap_add:
+      - NET_ADMIN
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  provisioning-beat:
+    build:
+      context: .
+      dockerfile: provisioning_service/Dockerfile
+    container_name: provisioning-beat
+    command: >
+      celery -A provisioning_service.message_queue.celery_beat beat
+      --loglevel=info
+    networks:
+      - app_net
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    dns_search:
+      - cloudlab.tirzokprivatecloud.com
+    cap_add:
+      - NET_ADMIN
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  app_net:
+    driver: bridge
+    name: app_net
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+
+volumes:
+  postgres_data:
+  rabbitmq_data:

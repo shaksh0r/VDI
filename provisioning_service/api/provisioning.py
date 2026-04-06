@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from typing import Optional
 
 import httpx
@@ -19,9 +20,9 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 POOL_NAME        = "pool_1"
-AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8001")
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8003")
 
-router = APIRouter(prefix="/provision", tags=["provisioning"])
+router = APIRouter()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Auth helpers
@@ -45,11 +46,6 @@ def _extract_bearer_token(
 
 
 async def _validate_token(token: str) -> dict:
-    """
-    Calls GET /auth/me on the auth service to verify the token.
-    Returns { user_id, username, role, expires_at } on success.
-    Raises 401 if the token is invalid/expired, 502 if auth service is down.
-    """
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
@@ -91,7 +87,7 @@ async def _release_vm(instance_id: str, db) -> None:
             updated_at       = CURRENT_TIMESTAMP
         WHERE instance_id = $1
         """,
-        instance_id,
+        uuid.UUID(instance_id),
     )
     logger.info("VM %s released back to pool", instance_id)
 
@@ -107,10 +103,7 @@ async def _session_expiry_watcher(
 ) -> None:
     try:
         await asyncio.sleep(timeout_seconds)
-        logger.info(
-            "Session expired for user %s on VM %s — releasing",
-            user_id, instance_id,
-        )
+        logger.info("Session expired for user %s on VM %s — releasing", user_id, instance_id)
         pool = await create_database_pool()
         async with pool.acquire() as conn:
             await _release_vm(instance_id, conn)
@@ -119,7 +112,6 @@ async def _session_expiry_watcher(
         logger.info("Expiry watcher cancelled for VM %s", instance_id)
 
 
-# Active expiry tasks: instance_id → asyncio.Task
 _expiry_tasks: dict[str, asyncio.Task] = {}
 
 
@@ -133,16 +125,6 @@ async def connect(
     x_auth_token:  Optional[str] = Header(default=None),
     db=Depends(get_db),
 ):
-    """
-    Called when the user clicks Connect on the frontend.
-
-    1. Validates token via auth service
-    2. Checks pool_1 is active
-    3. Atomically claims a ready VM (FOR UPDATE SKIP LOCKED)
-    4. Starts session expiry watcher
-    5. Returns floating IP to frontend
-    """
-
     token   = _extract_bearer_token(authorization, x_auth_token)
     user    = await _validate_token(token)
     user_id = user["user_id"]
@@ -168,7 +150,8 @@ async def connect(
     pool_id             = pool["pool_id"]
     max_session_minutes = pool["max_session_duration_minutes"] or 240
 
-    # Atomically claim a ready VM
+    # Atomically claim a ready VM — FOR UPDATE SKIP LOCKED prevents
+    # two concurrent requests from grabbing the same VM
     instance = await db.fetchrow(
         """
         WITH selected AS (
@@ -190,7 +173,7 @@ async def connect(
         RETURNING instance_id, floating_ip
         """,
         pool_id,
-        user_id,
+        uuid.UUID(user_id),  # cast: auth returns str, DB column is UUID
     )
 
     if not instance:
@@ -204,7 +187,7 @@ async def connect(
 
     logger.info("VM %s (%s) assigned to user %s", instance_id, floating_ip, user_id)
 
-    # Start expiry watcher (cancel any stale one first)
+    # Start expiry watcher
     existing = _expiry_tasks.pop(instance_id, None)
     if existing and not existing.done():
         existing.cancel()
@@ -229,10 +212,6 @@ async def disconnect(
     x_auth_token:  Optional[str] = Header(default=None),
     db=Depends(get_db),
 ):
-    """
-    Called when the user clicks Disconnect or closes the session.
-    Releases the VM back to the pool and cancels the expiry watcher.
-    """
     token   = _extract_bearer_token(authorization, x_auth_token)
     user    = await _validate_token(token)
     user_id = user["user_id"]
@@ -244,7 +223,7 @@ async def disconnect(
         WHERE assigned_user_id = $1
           AND status           = 'in_use'
         """,
-        user_id,
+        uuid.UUID(user_id),
     )
 
     if not instance:
@@ -270,10 +249,6 @@ async def session_status(
     x_auth_token:  Optional[str] = Header(default=None),
     db=Depends(get_db),
 ):
-    """
-    Returns the user's current VM session status.
-    Useful for the frontend to check on page reload if a session is still active.
-    """
     token   = _extract_bearer_token(authorization, x_auth_token)
     user    = await _validate_token(token)
     user_id = user["user_id"]
@@ -285,7 +260,7 @@ async def session_status(
         WHERE assigned_user_id = $1
           AND status           = 'in_use'
         """,
-        user_id,
+        uuid.UUID(user_id),
     )
 
     if not instance:

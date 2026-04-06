@@ -33,7 +33,7 @@ app.include_router(keystone_router,prefix="/keystone")
 app.include_router(neutron_router,prefix="/neutron")
 app.include_router(nova_router,prefix="/nova")
 app.include_router(user_router,prefix="/user")
-app.include_router(user_router,prefix="/provision")
+app.include_router(provisioning_router,prefix="/provision")
 
 
 

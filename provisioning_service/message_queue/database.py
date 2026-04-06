@@ -6,7 +6,7 @@ async def create_database_pool():
         user="myuser",
         password="mypassword",
         database="mydatabase",
-        host="localhost",
+        host="database",
         min_size=10,
         max_size=20,
         port=5432

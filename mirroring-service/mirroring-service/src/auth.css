@@ -1,0 +1,224 @@
+/* ═══════════════════════════════════════════════════════════════════
+   AUTH PAGE — uses the same design tokens as styles.css
+   Import styles.css first in your entry point, or copy the :root
+   block here. This file only adds auth-specific rules.
+═══════════════════════════════════════════════════════════════════ */
+
+.auth-shell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    width: 100vw;
+    background: var(--c-void);
+    font-family: var(--f-ui);
+
+    /* same subtle grid as the viewport */
+    background-image:
+        linear-gradient(var(--c-line-1) 1px, transparent 1px),
+        linear-gradient(90deg, var(--c-line-1) 1px, transparent 1px);
+    background-size: 32px 32px;
+}
+
+/* ── Card ────────────────────────────────────────────────────────── */
+.auth-card {
+    width: 100%;
+    max-width: 440px;
+    background: var(--c-surface-1);
+    border: 1px solid var(--c-line-2);
+    border-radius: 12px;
+    padding: 32px;
+    box-shadow:
+        0 0 0 1px var(--c-line-1),
+        0 24px 64px rgba(0, 0, 0, 0.5);
+    position: relative;
+    overflow: hidden;
+}
+
+/* top accent line */
+.auth-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+            transparent 0%,
+            var(--c-accent) 30%,
+            var(--c-accent-hi) 50%,
+            var(--c-accent) 70%,
+            transparent 100%);
+    opacity: 0.7;
+}
+
+/* ── Brand ───────────────────────────────────────────────────────── */
+.auth-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 28px;
+}
+
+.auth-mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    background: var(--c-accent-bg);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: 8px;
+    color: var(--c-accent-hi);
+    flex-shrink: 0;
+}
+
+.auth-brand__name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--c-text-1);
+    letter-spacing: -0.02em;
+}
+
+/* ── Tabs ────────────────────────────────────────────────────────── */
+.auth-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--c-surface-2);
+    border: 1px solid var(--c-line-2);
+    border-radius: 7px;
+    padding: 3px;
+    margin-bottom: 24px;
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 7px 0;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    font-family: var(--f-ui);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--c-text-3);
+    cursor: pointer;
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        color var(--dur-fast) var(--ease-out);
+}
+
+.auth-tab:hover {
+    color: var(--c-text-2);
+}
+
+.auth-tab--active {
+    background: var(--c-surface-3);
+    color: var(--c-text-1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Error ───────────────────────────────────────────────────────── */
+.auth-error {
+    padding: 10px 14px;
+    border-radius: 6px;
+    background: var(--c-err-bg);
+    border: 1px solid rgba(244, 63, 94, 0.2);
+    color: var(--c-err);
+    font-size: 12px;
+    margin-bottom: 16px;
+    line-height: 1.5;
+}
+
+/* ── Form ────────────────────────────────────────────────────────── */
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.auth-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.auth-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.auth-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--c-text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.auth-input {
+    height: 36px;
+    padding: 0 12px;
+    background: var(--c-surface-2);
+    border: 1px solid var(--c-line-2);
+    border-radius: 6px;
+    font-family: var(--f-ui);
+    font-size: 13px;
+    color: var(--c-text-1);
+    outline: none;
+    transition:
+        border-color var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out);
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.auth-input::placeholder {
+    color: var(--c-text-4);
+}
+
+.auth-input:focus {
+    border-color: var(--c-accent);
+    box-shadow: 0 0 0 3px var(--c-accent-glow);
+}
+
+/* ── Submit ──────────────────────────────────────────────────────── */
+.auth-submit {
+    margin-top: 6px;
+    height: 38px;
+    border: none;
+    border-radius: 6px;
+    background: var(--c-accent);
+    color: #fff;
+    font-family: var(--f-ui);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    letter-spacing: -0.01em;
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.12) inset,
+        0 1px 3px rgba(99, 102, 241, 0.35);
+    transition:
+        background var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out),
+        transform var(--dur-fast) var(--ease-out);
+}
+
+.auth-submit:hover:not(:disabled) {
+    background: var(--c-accent-hi);
+    box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.16) inset,
+        0 2px 12px rgba(99, 102, 241, 0.45);
+    transform: translateY(-1px);
+}
+
+.auth-submit:active:not(:disabled) {
+    background: var(--c-accent-lo);
+    transform: translateY(0);
+    box-shadow: none;
+}
+
+.auth-submit:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
