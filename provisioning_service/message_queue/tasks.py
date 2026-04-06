@@ -2,7 +2,7 @@ from provisioning_service.message_queue.celery_app import celery
 from provisioning_service.logic.vm import (
     get_instances,
     get_detailed_instances,
-    create_instance_volume_storage,
+    create_instance_local_storage,
 )
 
 from provisioning_service.logic.network import (
@@ -83,7 +83,7 @@ def create_vm(payload):
         server["key_name"] = DEFAULT_KEY_NAME
         payload["server"] = server
 
-    nova_response = create_instance_volume_storage(COMPUTE, x_auth_token, payload)
+    nova_response = create_instance_local_storage(COMPUTE, x_auth_token, payload)
 
     if not nova_response:
         return
@@ -299,19 +299,10 @@ def generate_pool():
 
                     payload   = {
                         "server": {
-                            "name":      name,
-                            "flavorRef": config["flavor_id"],
-                            "key_name":  DEFAULT_KEY_NAME,
-                            "block_device_mapping_v2": [
-                                {
-                                    "boot_index":             0,
-                                    "uuid":                   config["base_image_id"],
-                                    "source_type":            "image",
-                                    "destination_type":       "volume",
-                                    "volume_size":            20,
-                                    "delete_on_termination":  False,
-                                }
-                            ],
+                            "name":            name,
+                            "imageRef":        config["base_image_id"],
+                            "flavorRef":       config["flavor_id"],
+                            "key_name":        DEFAULT_KEY_NAME,
                             "networks": [
                                 {"uuid": config["network_id"]}
                             ],

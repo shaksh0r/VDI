@@ -2,6 +2,13 @@ import { defineConfig } from 'vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import babel from '@rolldown/plugin-babel'
 
+const MIRRORING_HOST = process.env.VITE_MIRRORING_HOST || 'localhost'
+const AUTH_HOST = process.env.VITE_AUTH_HOST || 'localhost'
+const PROVISION_HOST = process.env.VITE_PROVISION_HOST || 'localhost'
+
+const httpTarget = (host, port) => `http://${host}:${port}`
+const wsTarget = (host, port) => `ws://${host}:${port}`
+
 export default defineConfig({
   plugins: [
     react(),
@@ -9,13 +16,13 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api': 'http://mirroring:8000',
+      '/api': httpTarget(MIRRORING_HOST, 8000),
       '/ws': {
-        target: 'ws://mirroring:8000',
+        target: wsTarget(MIRRORING_HOST, 8000),
         ws: true,
       },
-      '/auth': 'http://auth-service:8003',
-      '/provision': 'http://provisioning-server:8001',
+      '/auth': httpTarget(AUTH_HOST, 8003),
+      '/provision': httpTarget(PROVISION_HOST, 8001),
     }
   }
 })

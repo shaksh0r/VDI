@@ -101,6 +101,10 @@ services:
     container_name: mirroring-frontend
     networks:
       - app_net
+    environment:
+      VITE_MIRRORING_HOST: mirroring
+      VITE_AUTH_HOST: auth-service
+      VITE_PROVISION_HOST: provisioning-server
     cap_add:
       - NET_ADMIN
     dns:
