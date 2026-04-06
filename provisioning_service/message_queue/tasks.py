@@ -35,6 +35,9 @@ x_auth_token        = str(os.getenv("openstack_token"))
 EXTRA_SEC_GROUP_1 = os.getenv("PROD_SEC")
 EXTRA_SEC_GROUP_2 = os.getenv("ALLOW_PING_SSH")
 
+# Default Nova key pair name for created VMs
+DEFAULT_KEY_NAME = "default-key"
+
 # Polling config for finalize_vm
 POLL_INTERVAL_SECONDS = 5
 POLL_MAX_ATTEMPTS     = 24   # 24 x 5s = 120s max wait for VM to become ACTIVE
@@ -74,6 +77,12 @@ def fetch_instances():
 
 @celery.task(name="tasks.create_vm")
 def create_vm(payload):
+    # Ensure a key_name is always present for Nova
+    server = payload.get("server") or {}
+    if not server.get("key_name"):
+        server["key_name"] = DEFAULT_KEY_NAME
+        payload["server"] = server
+
     nova_response = create_instance_volume_storage(COMPUTE, x_auth_token, payload)
 
     if not nova_response:
@@ -292,7 +301,7 @@ def generate_pool():
                         "server": {
                             "name":      name,
                             "flavorRef": config["flavor_id"],
-                            "key_name":  "default-key",
+                            "key_name":  DEFAULT_KEY_NAME,
                             "block_device_mapping_v2": [
                                 {
                                     "boot_index":             0,
