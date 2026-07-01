@@ -1,5 +1,4 @@
 services:
-
   database:
     build:
       context: ./database
@@ -7,7 +6,7 @@ services:
     networks:
       - app_net
     ports:
-      - "5432:5432"           # VPN-accessible via host IP; internal via container name
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -24,8 +23,8 @@ services:
     networks:
       - app_net
     ports:
-      - "5672:5672"           # AMQP — VPN-accessible
-      - "15672:15672"         # Management UI
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -116,7 +115,7 @@ services:
     ports:
       - "5173:5173"
     restart: unless-stopped
-  
+
   auth-service:
     build:
       context: ./auth-service

@@ -12,9 +12,6 @@ from pydantic import BaseModel, EmailStr
 from database_connection import create_database_pool, get_db
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Crypto
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _hash_password(password: str) -> str:
     pre_hashed = hashlib.sha256(password.encode()).hexdigest().encode()
@@ -25,10 +22,6 @@ def _verify_password(password: str, hashed: str) -> bool:
     pre_hashed = hashlib.sha256(password.encode()).hexdigest().encode()
     return bcrypt.checkpw(pre_hashed, hashed.encode())
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Pydantic models
-# ─────────────────────────────────────────────────────────────────────────────
 
 class SignupRequest(BaseModel):
     username: str
@@ -59,10 +52,6 @@ class LoginResponse(BaseModel):
     user_id: str
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Lifespan
-# ─────────────────────────────────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db_pool = await create_database_pool()
@@ -73,9 +62,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Auth Service", version="1.0.0", lifespan=lifespan)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _now() -> datetime:
     """Always returns a naive UTC datetime to match TIMESTAMP columns in DB."""
@@ -110,9 +96,6 @@ def _make_token(ttl_minutes: int) -> tuple[str, str, datetime]:
     return token, token_hash, expires_at
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Routes
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def healthcheck():

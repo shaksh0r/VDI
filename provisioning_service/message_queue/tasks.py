@@ -20,9 +20,6 @@ from datetime import datetime
 
 from ..services.pooling.pool_manager import Pool_Manager
 
-# -----------------------------------------------------------------------------
-#  Environment
-# -----------------------------------------------------------------------------
 
 load_dotenv()
 
@@ -31,23 +28,19 @@ NETWORK             = "http://topcsneutron.cloudlab.buet.ac.bd/v2.0"      # Neut
 EXTERNAL_NETWORK_ID = os.getenv("EXTERNAL_NETWORK_ID")    # External network for floating IPs
 x_auth_token        = str(os.getenv("openstack_token"))
 
-# Optional extra security groups for created VMs (names/IDs from env)
+
 EXTRA_SEC_GROUP_1 = os.getenv("PROD_SEC")
 EXTRA_SEC_GROUP_2 = os.getenv("ALLOW_PING_SSH")
 
-# Default Nova key pair name for created VMs
+
 DEFAULT_KEY_NAME = "default-key"
 
-# Polling config for finalize_vm
 POLL_INTERVAL_SECONDS = 5
-POLL_MAX_ATTEMPTS     = 24   # 24 x 5s = 120s max wait for VM to become ACTIVE
+POLL_MAX_ATTEMPTS     = 24   
 
 POOL_NAME = "pool_1"
 
 
-# -----------------------------------------------------------------------------
-#  Existing tasks (unchanged)
-# -----------------------------------------------------------------------------
 
 @celery.task
 def process_data(x):
@@ -69,15 +62,9 @@ def fetch_instances():
     return output
 
 
-# -----------------------------------------------------------------------------
-#  create_vm  (updated)
-#  Creates the VM on Nova, inserts a 'provisioning' row into desktop_instances,
-#  bumps current_count, then fires finalize_vm asynchronously.
-# -----------------------------------------------------------------------------
 
 @celery.task(name="tasks.create_vm")
 def create_vm(payload):
-    # Ensure a key_name is always present for Nova
     server = payload.get("server") or {}
     if not server.get("key_name"):
         server["key_name"] = DEFAULT_KEY_NAME
@@ -88,7 +75,6 @@ def create_vm(payload):
     if not nova_response:
         return
 
-    # Nova returns {"server": {"id": "...", ...}} immediately after accepting
     openstack_vm_id = nova_response.get("server", {}).get("id")
     if not openstack_vm_id:
         return

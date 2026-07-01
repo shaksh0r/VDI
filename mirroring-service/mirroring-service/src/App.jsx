@@ -8,6 +8,9 @@ export default function App({ onLogout }) {
   const [sessionText, setSessionText] = useState("No active session");
   const [isConnected, setIsConnected] = useState(false);
   const [showPlaceholder, setShowPlaceholder] = useState(true);
+  const [poolCount, setPoolCount] = useState(1);
+  const [poolStatus, setPoolStatus] = useState("");
+  const [poolBusy, setPoolBusy] = useState(false);
 
   const displayRef = useRef(null);
   const clientRef = useRef(null);
@@ -215,6 +218,50 @@ export default function App({ onLogout }) {
     });
   }
 
+  // ── Pool provisioning ───────────────────────────────────────────────────
+  function normalizePoolCount(value) {
+    if (!Number.isFinite(value)) return 1;
+    if (value < 1) return 1;
+    if (value > 2) return 2;
+    return value;
+  }
+
+  function requestPool() {
+    var token = getToken();
+    if (!token) {
+      setPoolStatus("Login required");
+      return;
+    }
+
+    var count = normalizePoolCount(poolCount);
+    setPoolBusy(true);
+    setPoolStatus("Queuing VM creation...");
+
+    fetch("/provision/pool/expand", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ count: count }),
+    })
+      .then(function (r) {
+        return r.json().then(function (body) {
+          if (!r.ok) throw new Error(body.detail || "Provisioning failed");
+          return body;
+        });
+      })
+      .then(function (body) {
+        setPoolStatus("Queued " + body.queued + " VM(s) for creation");
+      })
+      .catch(function (err) {
+        setPoolStatus(err.message || "Request failed");
+      })
+      .finally(function () {
+        setPoolBusy(false);
+      });
+  }
+
   // ── Connect ────────────────────────────────────────────────────────────────
   function connect() {
     if (!window.Guacamole) {
@@ -390,6 +437,28 @@ export default function App({ onLogout }) {
             </svg>
             Disconnect
           </button>
+        </div>
+
+        <div className="actionbar__pool">
+          <span className="pool-label">Pool</span>
+          <input
+            className="pool-input"
+            type="number"
+            min="1"
+            max="2"
+            value={poolCount}
+            onChange={(e) => setPoolCount(normalizePoolCount(parseInt(e.target.value, 10)))}
+            aria-label="Number of VMs to create"
+          />
+          <button
+            className="btn btn--pool"
+            onClick={requestPool}
+            disabled={poolBusy}
+            aria-label="Create VM pool"
+          >
+            {poolBusy ? "Queueing..." : "Create"}
+          </button>
+          <span className="pool-status">{poolStatus}</span>
         </div>
 
         <div className="actionbar__meta">
