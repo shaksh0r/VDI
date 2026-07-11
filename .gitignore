@@ -12,3 +12,4 @@ auth-service/__pycache__
 seed_auth_tests.sql
 *.png
 models/__pycache__
+todos/
