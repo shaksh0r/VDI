@@ -31,6 +31,7 @@ class CreateSubnetRequest(BaseModel):
 
 class FloatingIPCreate(BaseModel):
     floating_network_id: str
+    port_id: str
     description: Optional[str] = None
 
 
