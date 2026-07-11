@@ -1,125 +1,27 @@
 import httpx
 
+external_network_id = 'c2e7fc3d-ef57-459b-b251-205291635588'
 
-async def get_networks(base_url: str, x_auth_token: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/networks",
+def get_port_to_device(base_url:str,x_auth_token:str,device_id:str):
+    with httpx.Client() as client:
+        response = client.get(
+            f"{base_url}/servers/{device_id}/os-interface",
             headers={"X-Auth-Token": x_auth_token}
         )
         return response.json()
 
+def create_floating_ip(base_url: str, x_auth_token: str, port_id: str):
+    floating_ip = dict()
+    floating_ip['floating_network_id'] = external_network_id
+    floating_ip['port_id'] = port_id
 
-async def get_network(base_url: str, x_auth_token: str, network_id: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/networks/{network_id}",
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def get_security_groups(base_url: str, x_auth_token: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/security-groups",
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def create_network(base_url: str, x_auth_token: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/networks",
+    payload = dict()
+    payload['floatingip'] = floating_ip
+    with httpx.Client() as client:
+        response =  client.post(
+            f"{base_url}/v2.0/floatingips",
             json=payload,
             headers={"X-Auth-Token": x_auth_token}
         )
         return response.json()
 
-
-async def get_subnets(base_url: str, x_auth_token: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/subnets",
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def attach_subnet_to_network(base_url: str, x_auth_token: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/subnets",
-            json=payload,
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def get_floating_ips(base_url: str, x_auth_token: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/floatingips",
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def create_floating_ip(base_url: str, x_auth_token: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/floatingips",
-            json=payload,
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def get_ports(base_url: str, x_auth_token: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/ports",
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def get_port_by_device(base_url: str, x_auth_token: str, instance_id: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}/ports",
-            params={"device_id": instance_id},
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def attach_floating_ip(base_url: str, x_auth_token: str, floatingip_id: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.put(
-            f"{base_url}/floatingips/{floatingip_id}",
-            json=payload,
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def create_router(base_url: str, x_auth_token: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}/routers",
-            json=payload,
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()
-
-
-async def attach_subnet_to_router(base_url: str, x_auth_token: str, router_id: str, payload: dict):
-    async with httpx.AsyncClient() as client:
-        response = await client.put(
-            f"{base_url}/routers/{router_id}/add_router_interface",
-            json=payload,
-            headers={"X-Auth-Token": x_auth_token}
-        )
-        return response.json()

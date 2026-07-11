@@ -576,8 +576,7 @@ status VARCHAR(50) DEFAULT 'creating' CHECK (
 ),
 
 -- Metadata
-created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-deleted_at TIMESTAMP,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, deleted_at TIMESTAMP,
 
 -- Constraints
 CONSTRAINT check_snapshot_name_length CHECK (char_length(name) >= 3)

@@ -1,81 +1,44 @@
 import os
 from dotenv import load_dotenv
-from fastapi import APIRouter
-import asyncio
-
-from models.nova_models import CreateInstanceLocalStorageRequest, CreateInstanceVolumeStorageRequest
-from ..logic.vm import (
-    get_instances,
-    get_detailed_instances,
-    get_instance,
-    get_flavors,
-    get_flavor,
-    get_images,
-    get_detailed_images,
-    get_image,
-    get_key_pairs,
-    create_instance_local_storage,
-    create_instance_volume_storage,
-)
+from fastapi import APIRouter,status
+import time
+import threading
+from models.nova_models import CreateInstanceLocalStorageRequest
+from provisioning_service.logic.vm import create_instance_local_storage
+from provisioning_service.logic.network import create_floating_ip,get_port_to_device
+from provisioning_service.logic.vm import get_instance_detail
 
 router = APIRouter()
 
 COMPUTE = "http://topcsnova.cloudlab.buet.ac.bd/v2.1"
+NETWORK = 'http://topcsneutron.cloudlab.buet.ac.bd'
 
 load_dotenv()
 x_auth_token = str(os.getenv("openstack_token"))
 
-
-@router.get("/servers")
-async def list_instances():
-    return await asyncio.to_thread(get_instances,COMPUTE, x_auth_token)
-
-
-@router.get("/servers/detail")
-async def list_detailed_instances():
-    return await get_detailed_instances(COMPUTE, x_auth_token)
-
-
-@router.get("/servers/{instance_id}")
-async def detailed_instance(instance_id: str):
-    return await get_instance(COMPUTE, x_auth_token, instance_id)
+def poll_vm_creation(vm_id:str,x_auth_token:str):
+    status = None
+    while status not in ['ACTIVE','ERROR']:
+        response = get_instance_detail(COMPUTE,x_auth_token,vm_id)
+        if response['status'] != 200:
+            return
+        
+          
 
 
-@router.get("/flavors")
-async def list_flavors():
-    return await get_flavors(COMPUTE, x_auth_token)
+def create_vm_attach_ip(COMPUTE,NETWORK,x_auth_token,request_body):
+    response = create_instance_local_storage(COMPUTE, x_auth_token, request_body)
+    vm_id = response['server']['id']
+    time.sleep(10)
+    port_response = get_port_to_device(COMPUTE,x_auth_token,vm_id)
+    port_id = port_response['interfaceAttachments'][0]['port_id']
+    floating_response = create_floating_ip(NETWORK,x_auth_token,port_id)
 
+    return floating_response
 
-@router.get("/flavors/{flavor_id}")
-async def list_detailed_flavor(flavor_id: str):
-    return await get_flavor(COMPUTE, x_auth_token, flavor_id)
-
-
-@router.get("/images")
-async def list_images():
-    return await get_images(COMPUTE, x_auth_token)
-
-
-@router.get("/images/detail")
-async def list_detailed_images():
-    return await get_detailed_images(COMPUTE, x_auth_token)
-
-
-@router.get("/images/{image_id}")
-async def list_detailed_image(image_id: str):
-    return await get_image(COMPUTE, x_auth_token, image_id)
-
-
-@router.get("/{project_id}/os-keypairs")
-async def list_key_pairs(project_id: str):
-    return await get_key_pairs(COMPUTE, x_auth_token, project_id)
-
-
-@router.post("/servers/local_storage")
-async def create_instance_local_storage_route(request_body: CreateInstanceLocalStorageRequest):
-    return await create_instance_local_storage(COMPUTE, x_auth_token, request_body.model_dump())
-
-
-@router.post("/servers/volume_storage")
-async def create_instance_volume_storage_route(request_body: CreateInstanceVolumeStorageRequest):
-    return await create_instance_volume_storage(COMPUTE, x_auth_token, request_body.model_dump())
+@router.post("/servers/local_storage",status_code=status.HTTP_201_CREATED)
+def create_instance_local_storage_route(request_body: CreateInstanceLocalStorageRequest):
+    vm_thread = threading.Thread(target=(create_vm_attach_ip),args=(COMPUTE,NETWORK,x_auth_token,request_body))
+    vm_thread.start()
+    return {"Request":"Sent"}
+    

@@ -1,10 +1,14 @@
-# main.py
+# main.py  —  VDI Mirroring Service
 import asyncio
 import logging
 import os
+import uuid
 
+import asyncpg
+import httpx
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,14 +32,17 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+STATIC_DIR = os.path.join(BASE_DIR, "mirroring-service", "dist")
 
-# guacd
-GUACD_HOST = os.getenv("GUACD_HOST", "127.0.0.1")
+# guacd — service name on guac_net Docker network
+GUACD_HOST = os.getenv("GUACD_HOST", "guacd")
 GUACD_PORT = int(os.getenv("GUACD_PORT", "4822"))
 
-# Target VM / RDP
-VM_HOST     = os.getenv("VM_HOST",     "")
+# Auth service
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8003")
+
+# VM RDP credentials — shared across all pool VMs
+# Hostname (floating IP) is resolved per-user from the database
 VM_PORT     = os.getenv("VM_PORT",     "3389")
 VM_USERNAME = os.getenv("VM_USERNAME", "")
 VM_PASSWORD = os.getenv("VM_PASSWORD", "")
@@ -59,9 +66,19 @@ VM_ENABLE_MENU_ANIMATIONS  = os.getenv("VM_ENABLE_MENU_ANIMATIONS",  "true")
 VM_DISABLE_BITMAP_CACHING  = os.getenv("VM_DISABLE_BITMAP_CACHING",  "false")
 VM_CLIENT_NAME             = os.getenv("VM_CLIENT_NAME",             "vdi-mirroring")
 
+# Database — host.docker.internal to reach PostgreSQL on the host from Docker
+DB_USER     = os.getenv("DB_USER",     "myuser")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "mypassword")
+DB_NAME     = os.getenv("DB_NAME",     "mydatabase")
+DB_HOST     = os.getenv("DB_HOST",     "host.docker.internal")
+DB_PORT     = int(os.getenv("DB_PORT", "5432"))
+
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-logger.info("  guacd : %s:%s", GUACD_HOST, GUACD_PORT)
-logger.info("  VM    : %s:%s  protocol=%s", VM_HOST or "⚠ NOT SET", VM_PORT, VM_PROTOCOL)
+logger.info("  guacd        : %s:%s", GUACD_HOST, GUACD_PORT)
+logger.info("  auth service : %s",    AUTH_SERVICE_URL)
+logger.info("  db host      : %s:%s", DB_HOST, DB_PORT)
+logger.info("  VM port      : %s  protocol=%s", VM_PORT, VM_PROTOCOL)
+logger.info("  (VM host resolved per-user from database)")
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
@@ -172,7 +189,6 @@ class AsyncGuacamoleClient:
         if not args_parts or args_parts[0] != "args":
             raise ConnectionError(f"Handshake: expected 'args', got: {args_parts}")
         arg_names = args_parts[1:]
-        logger.debug("← args (%d params): %s", len(arg_names), arg_names)
 
         await self._send("size", width, height, dpi)
         logger.debug("→ size %sx%s @%sdpi", width, height, dpi)
@@ -180,7 +196,6 @@ class AsyncGuacamoleClient:
         await self._send("audio", "audio/L8", "audio/L16")
         await self._send("video")
         await self._send("image", "image/png", "image/jpeg", "image/webp")
-        logger.debug("→ audio / video / image capabilities sent")
 
         connect_values = [param_map.get(name, "") for name in arg_names]
         self._writer.write(guac_encode("connect", *connect_values))
@@ -238,7 +253,7 @@ class AsyncGuacamoleClient:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
+#  Auth helper
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _missing_vars() -> list[str]:
@@ -255,11 +270,53 @@ async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamole
     if missing:
         raise ValueError(f"Missing required env vars: {', '.join(missing)}")
 
+    if resp.status_code == 401:
+        raise ValueError("Invalid or expired token")
+    if resp.status_code != 200:
+        raise ValueError(f"Unexpected auth service response: {resp.status_code}")
+
+    return resp.json()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  DB helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_assigned_vm_ip(user_id: str, db: asyncpg.Connection) -> str:
+    """
+    Look up floating_ip for the VM currently assigned to this user.
+    Casts user_id string → UUID so asyncpg does not reject it.
+    Raises ValueError if no active assignment found.
+    """
+    row = await db.fetchrow(
+        """
+        SELECT floating_ip
+        FROM desktop_instances
+        WHERE assigned_user_id = $1
+          AND status           = 'in_use'
+        """,
+        uuid.UUID(user_id),  # cast: auth service returns str, DB column is UUID
+    )
+    if not row:
+        raise ValueError(f"No active VM assignment found for user {user_id}")
+    return str(row["floating_ip"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  guacd client factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _make_guac_client(
+    vm_host: str,
+    width: int,
+    height: int,
+    dpi: int,
+) -> AsyncGuacamoleClient:
     client = AsyncGuacamoleClient(host=GUACD_HOST, port=GUACD_PORT)
     await client.connect()
     await client.handshake(
         protocol                   = VM_PROTOCOL,
-        hostname                   = VM_HOST,
+        hostname                   = vm_host,
         port                       = VM_PORT,
         username                   = VM_USERNAME,
         password                   = VM_PASSWORD,
@@ -312,6 +369,11 @@ async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+@app.get("/guacamole-common-js.min.js", include_in_schema=False)
+async def guac_js() -> FileResponse:
+    return FileResponse(os.path.join(STATIC_DIR, "guacamole-common-js.min.js"))
+
+
 @app.get("/api/health")
 async def health_check():
     missing = _missing_vars()
@@ -323,10 +385,8 @@ async def health_check():
         }
     return {
         "ok":          True,
-        "status":      "ready",
-        "guacd_host":  GUACD_HOST,
-        "guacd_port":  GUACD_PORT,
-        "vm_host":     VM_HOST,
+        "guacd":       f"{GUACD_HOST}:{GUACD_PORT}",
+        "auth_service": AUTH_SERVICE_URL,
         "vm_port":     VM_PORT,
         "vm_protocol": VM_PROTOCOL,
         "vm_security": VM_SECURITY,
@@ -366,7 +426,7 @@ async def get_session():
 @app.websocket("/ws/guacd")
 async def guacd_tunnel(websocket: WebSocket):
     """
-    Fully async bidirectional relay: Browser WebSocket ↔ guacd TCP.
+    Bidirectional relay: Browser WebSocket ↔ guacd TCP.
 
     FIX: Uses a shared asyncio.Event (ws_closed) to signal both relay
     tasks the moment the WebSocket closes. This prevents the ASGI race
@@ -374,8 +434,10 @@ async def guacd_tunnel(websocket: WebSocket):
     after the socket has already been closed by browser_to_guacd's exit.
     """
 
-    # ── Step 1: Parse viewport from URL query params ──────────────────────
+    # ── Step 1: Parse query params ────────────────────────────────────────
     params = dict(websocket.query_params)
+    token  = params.get("token", "").strip()
+
     try:
         width  = int(params.get("width",  VM_WIDTH))
         height = int(params.get("height", VM_HEIGHT))
@@ -385,10 +447,6 @@ async def guacd_tunnel(websocket: WebSocket):
 
     # ── Step 2: Accept WebSocket ──────────────────────────────────────────
     await websocket.accept(subprotocol="guacamole")
-    logger.info(
-        "WS accepted  viewport=%dx%d @%ddpi  client=%s",
-        width, height, dpi, websocket.client,
-    )
 
     # ── Step 3: Validate environment ──────────────────────────────────────
     missing = _missing_vars()
@@ -401,17 +459,14 @@ async def guacd_tunnel(websocket: WebSocket):
     # ── Step 4: Guacamole handshake ───────────────────────────────────────
     guac_client: AsyncGuacamoleClient | None = None
     try:
-        guac_client = await _make_guac_client(width, height, dpi)
-        logger.info(
-            "guacd handshake OK ✅  vm=%s:%s  viewport=%dx%d",
-            VM_HOST, VM_PORT, width, height,
-        )
+        guac_client = await _make_guac_client(vm_host, width, height, dpi)
+        logger.info("guacd handshake OK ✅  vm=%s:%s  viewport=%dx%d", vm_host, VM_PORT, width, height)
     except Exception as exc:
         logger.error("guacd handshake failed: %s", exc)
         await websocket.close(code=1011, reason="guacd handshake failed")
         return
 
-    # ── Step 5: Bidirectional async relay ─────────────────────────────────
+    # ── Step 6: Bidirectional relay ───────────────────────────────────────
 
     # FIX: Shared shutdown event — set by whichever side closes first.
     # Both tasks check this before attempting any further sends/receives.
@@ -425,7 +480,7 @@ async def guacd_tunnel(websocket: WebSocket):
         """
         try:
             while True:
-                data = await websocket.receive_text()
+                data     = await websocket.receive_text()
                 stripped = data.strip()
 
                 # Filter 1: Guacamole JS nop keepalive — must not reach guacd
@@ -440,7 +495,7 @@ async def guacd_tunnel(websocket: WebSocket):
                 await guac_client.send_text(data)
 
         except WebSocketDisconnect:
-            logger.info("browser→guacd: browser disconnected")
+            logger.info("browser→guacd: browser disconnected  user=%s", user_id)
         except Exception as exc:
             logger.warning("browser→guacd error: %s", exc)
         finally:
@@ -465,7 +520,7 @@ async def guacd_tunnel(websocket: WebSocket):
                 instruction = await guac_client.receive_instruction()
 
                 if instruction is None:
-                    logger.info("guacd→browser: guacd closed the stream")
+                    logger.info("guacd→browser: guacd closed the stream  user=%s", user_id)
                     break
 
                 # FIX: Double-check before sending — the event may have been
@@ -483,7 +538,7 @@ async def guacd_tunnel(websocket: WebSocket):
                     break
 
         except WebSocketDisconnect:
-            logger.info("guacd→browser: browser disconnected while sending")
+            logger.info("guacd→browser: browser disconnected while sending  user=%s", user_id)
         except Exception as exc:
             logger.warning("guacd→browser error: %s", exc)
         finally:
@@ -497,15 +552,11 @@ async def guacd_tunnel(websocket: WebSocket):
     task_g2b = asyncio.create_task(guacd_to_browser(), name="guacd→browser")
 
     try:
-        done, pending = await asyncio.wait(
+        done, _ = await asyncio.wait(
             [task_b2g, task_g2b],
             return_when=asyncio.FIRST_COMPLETED,
         )
-        logger.info(
-            "Relay ended ■  finished=%s",
-            [t.get_name() for t in done],
-        )
-
+        logger.info("Relay ended ■  user=%s  vm=%s  finished=%s", user_id, vm_host, [t.get_name() for t in done])
     finally:
         # Cancel the still-running task
         for task in [task_b2g, task_g2b]:
@@ -520,4 +571,13 @@ async def guacd_tunnel(websocket: WebSocket):
         if guac_client is not None:
             await guac_client.disconnect()
             await guac_client.close()
-            logger.info("guacd connection closed cleanly")
+            logger.info("guacd connection closed cleanly  user=%s", user_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SPA fallback — must be last
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str) -> FileResponse:
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))

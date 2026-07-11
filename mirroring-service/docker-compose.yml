@@ -16,6 +16,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: fastapi
     networks:
       - guac_net
