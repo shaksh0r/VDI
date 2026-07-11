@@ -83,27 +83,6 @@ logger.info("━━━━━━━━━━━━━━━━━━━━━━�
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Lifespan — DB pool
-# ─────────────────────────────────────────────────────────────────────────────
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.db_pool = await asyncpg.create_pool(
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        host=DB_HOST,
-        port=DB_PORT,
-        min_size=5,
-        max_size=20,
-    )
-    logger.info("Database pool created")
-    yield
-    await app.state.db_pool.close()
-    logger.info("Database pool closed")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  Guacamole Protocol Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -153,7 +132,9 @@ class AsyncGuacamoleClient:
         await self._writer.drain()
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
+        self._reader, self._writer = await asyncio.open_connection(
+            self._host, self._port
+        )
         logger.debug("TCP connected → guacd %s:%s", self._host, self._port)
 
     async def handshake(
@@ -210,6 +191,8 @@ class AsyncGuacamoleClient:
         arg_names = args_parts[1:]
 
         await self._send("size", width, height, dpi)
+        logger.debug("→ size %sx%s @%sdpi", width, height, dpi)
+
         await self._send("audio", "audio/L8", "audio/L16")
         await self._send("video")
         await self._send("image", "image/png", "image/jpeg", "image/webp")
@@ -249,9 +232,10 @@ class AsyncGuacamoleClient:
             try:
                 self._writer.write(guac_encode("disconnect"))
                 await self._writer.drain()
+                logger.debug("→ sent 'disconnect' instruction to guacd")
                 await asyncio.wait_for(self._reader.read(4096), timeout=2.0)
             except asyncio.TimeoutError:
-                pass
+                logger.debug("guacd disconnect: timeout waiting for acknowledgement")
             except Exception as exc:
                 logger.debug("guacd disconnect: %s", exc)
 
@@ -272,21 +256,19 @@ class AsyncGuacamoleClient:
 #  Auth helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _resolve_token(token: str) -> dict:
-    """
-    Validate token via auth service GET /auth/me.
-    Returns { user_id, username, role, expires_at }.
-    Raises ValueError on failure so WebSocket handler can close cleanly.
-    """
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(
-                f"{AUTH_SERVICE_URL}/auth/me",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-        except httpx.HTTPError as exc:
-            logger.error("Auth service unreachable: %s", exc)
-            raise ValueError("Auth service unreachable")
+def _missing_vars() -> list[str]:
+    required = {
+        "VM_HOST":     VM_HOST,
+        "VM_USERNAME": VM_USERNAME,
+        "VM_PASSWORD": VM_PASSWORD,
+    }
+    return [k for k, v in required.items() if not v]
+
+
+async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamoleClient:
+    missing = _missing_vars()
+    if missing:
+        raise ValueError(f"Missing required env vars: {', '.join(missing)}")
 
     if resp.status_code == 401:
         raise ValueError("Invalid or expired token")
@@ -361,46 +343,29 @@ async def _make_guac_client(
 #  FastAPI Application
 # ─────────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(
-    title    = "VDI Mirror",
-    version  = "1.0.0",
-    lifespan = lifespan,
-)
+app = FastAPI(title="VDI Mirror", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],
-    allow_credentials = True,
-    allow_methods     = ["*"],
-    allow_headers     = ["*"],
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+class NoCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/assets/") and \
-           request.url.path.endswith((".js", ".css")):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"]        = "no-cache"
-            response.headers["Expires"]       = "0"
+        response.headers["Cache-Control"] = "no-store"
         return response
 
-app.add_middleware(NoCacheStaticMiddleware)
 
-app.mount(
-    "/assets",
-    StaticFiles(directory=os.path.join(STATIC_DIR, "assets")),
-    name="assets",
-)
+app.add_middleware(NoCacheMiddleware)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  HTTP Routes
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
+@app.get("/")
+async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
@@ -411,12 +376,46 @@ async def guac_js() -> FileResponse:
 
 @app.get("/api/health")
 async def health_check():
+    missing = _missing_vars()
+    if missing:
+        return {
+            "ok":     False,
+            "status": "misconfigured",
+            "errors": [f"{v} is not set" for v in missing],
+        }
     return {
         "ok":          True,
         "guacd":       f"{GUACD_HOST}:{GUACD_PORT}",
         "auth_service": AUTH_SERVICE_URL,
         "vm_port":     VM_PORT,
         "vm_protocol": VM_PROTOCOL,
+        "vm_security": VM_SECURITY,
+        "vm_domain":   VM_DOMAIN or None,
+    }
+
+
+@app.get("/api/session")
+async def get_session():
+    missing = _missing_vars()
+    if missing:
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail      = f"Server misconfigured — missing: {', '.join(missing)}",
+        )
+    return {
+        "ok": True,
+        "connection": {
+            "host":           VM_HOST,
+            "port":           VM_PORT,
+            "protocol":       VM_PROTOCOL,
+            "username":       VM_USERNAME,
+            "password_set":   bool(VM_PASSWORD),
+            "domain":         VM_DOMAIN or None,
+            "security":       VM_SECURITY,
+            "default_width":  VM_WIDTH,
+            "default_height": VM_HEIGHT,
+            "default_dpi":    VM_DPI,
+        },
     }
 
 
@@ -429,14 +428,10 @@ async def guacd_tunnel(websocket: WebSocket):
     """
     Bidirectional relay: Browser WebSocket ↔ guacd TCP.
 
-    URL: ws://host/ws/guacd?token=<token>&width=W&height=H&dpi=D
-
-    Flow:
-      1. Extract token from query params
-      2. Validate via auth service → get user_id
-      3. Look up assigned VM floating_ip from DB using user_id (UUID cast)
-      4. Handshake with guacd using that IP
-      5. Relay frames bidirectionally
+    FIX: Uses a shared asyncio.Event (ws_closed) to signal both relay
+    tasks the moment the WebSocket closes. This prevents the ASGI race
+    condition where guacd_to_browser attempts websocket.send_text()
+    after the socket has already been closed by browser_to_guacd's exit.
     """
 
     # ── Step 1: Parse query params ────────────────────────────────────────
@@ -450,39 +445,18 @@ async def guacd_tunnel(websocket: WebSocket):
     except (ValueError, TypeError):
         width, height, dpi = VM_WIDTH, VM_HEIGHT, VM_DPI
 
-    # ── Step 2: Accept WebSocket (must happen before any close()) ─────────
+    # ── Step 2: Accept WebSocket ──────────────────────────────────────────
     await websocket.accept(subprotocol="guacamole")
 
-    # ── Step 3: Validate token ────────────────────────────────────────────
-    if not token:
-        logger.warning("WS rejected: no token provided")
-        await websocket.close(code=1008, reason="Missing token")
+    # ── Step 3: Validate environment ──────────────────────────────────────
+    missing = _missing_vars()
+    if missing:
+        reason = f"Server misconfigured: missing {', '.join(missing)}"
+        logger.error(reason)
+        await websocket.close(code=1011, reason=reason)
         return
 
-    try:
-        user    = await _resolve_token(token)
-        user_id = user["user_id"]
-        logger.info("WS authenticated: user=%s  viewport=%dx%d @%ddpi", user_id, width, height, dpi)
-    except ValueError as exc:
-        logger.warning("WS auth failed: %s", exc)
-        await websocket.close(code=1008, reason=str(exc))
-        return
-
-    # ── Step 4: Resolve VM IP from database ───────────────────────────────
-    try:
-        async with websocket.app.state.db_pool.acquire() as db:
-            vm_host = await _get_assigned_vm_ip(user_id, db)
-        logger.info("VM resolved: user=%s  vm_ip=%s", user_id, vm_host)
-    except ValueError as exc:
-        logger.warning("WS rejected — no VM assigned: %s", exc)
-        await websocket.close(code=1008, reason="No active VM session. Please click Connect first.")
-        return
-    except Exception as exc:
-        logger.error("DB error for user %s: %s", user_id, exc)
-        await websocket.close(code=1011, reason="Internal server error")
-        return
-
-    # ── Step 5: guacd handshake ───────────────────────────────────────────
+    # ── Step 4: Guacamole handshake ───────────────────────────────────────
     guac_client: AsyncGuacamoleClient | None = None
     try:
         guac_client = await _make_guac_client(vm_host, width, height, dpi)
@@ -494,35 +468,85 @@ async def guacd_tunnel(websocket: WebSocket):
 
     # ── Step 6: Bidirectional relay ───────────────────────────────────────
 
+    # FIX: Shared shutdown event — set by whichever side closes first.
+    # Both tasks check this before attempting any further sends/receives.
+    ws_closed = asyncio.Event()
+
     async def browser_to_guacd() -> None:
+        """
+        Forward: browser ──► guacd
+        Sets ws_closed the moment the browser disconnects so that
+        guacd_to_browser stops sending immediately.
+        """
         try:
             while True:
                 data     = await websocket.receive_text()
                 stripped = data.strip()
+
+                # Filter 1: Guacamole JS nop keepalive — must not reach guacd
                 if stripped == "3.nop;":
                     continue
+
+                # Filter 2: Internal tunnel opcode — RawTunnel never sends
+                # these but guard anyway
                 if stripped.startswith("0.,") or stripped == "0.;":
                     continue
+
                 await guac_client.send_text(data)
+
         except WebSocketDisconnect:
             logger.info("browser→guacd: browser disconnected  user=%s", user_id)
         except Exception as exc:
             logger.warning("browser→guacd error: %s", exc)
+        finally:
+            # FIX: Signal the shutdown event so guacd_to_browser exits its
+            # loop cleanly without attempting further websocket.send_text()
+            # calls on an already-closed socket.
+            ws_closed.set()
 
     async def guacd_to_browser() -> None:
+        """
+        Forward: guacd ──► browser
+        FIX: Checks ws_closed before every send. If the WebSocket is
+        already closed, exits silently instead of raising an ASGI error.
+        """
         try:
             while True:
+                # FIX: Exit immediately if the WebSocket has already closed
+                if ws_closed.is_set():
+                    logger.info("guacd→browser: ws_closed signalled, stopping relay")
+                    break
+
                 instruction = await guac_client.receive_instruction()
+
                 if instruction is None:
                     logger.info("guacd→browser: guacd closed the stream  user=%s", user_id)
                     break
-                await websocket.send_text(instruction)
+
+                # FIX: Double-check before sending — the event may have been
+                # set between receive_instruction() returning and this send
+                if ws_closed.is_set():
+                    logger.info("guacd→browser: ws_closed before send, dropping frame")
+                    break
+
+                try:
+                    await websocket.send_text(instruction)
+                except Exception:
+                    # WebSocket closed between the is_set() check and the send
+                    # This is safe to ignore — ws_closed will be set already
+                    logger.info("guacd→browser: send failed (ws already closed)")
+                    break
+
         except WebSocketDisconnect:
             logger.info("guacd→browser: browser disconnected while sending  user=%s", user_id)
         except Exception as exc:
             logger.warning("guacd→browser error: %s", exc)
+        finally:
+            # Also signal ws_closed in case guacd side closed first,
+            # so browser_to_guacd unblocks on next receive_text()
+            ws_closed.set()
 
-    logger.info("Relay started ▶  user=%s  vm=%s  viewport=%dx%d", user_id, vm_host, width, height)
+    logger.info("Relay started ▶  viewport=%dx%d", width, height)
 
     task_b2g = asyncio.create_task(browser_to_guacd(), name="browser→guacd")
     task_g2b = asyncio.create_task(guacd_to_browser(), name="guacd→browser")
@@ -534,6 +558,7 @@ async def guacd_tunnel(websocket: WebSocket):
         )
         logger.info("Relay ended ■  user=%s  vm=%s  finished=%s", user_id, vm_host, [t.get_name() for t in done])
     finally:
+        # Cancel the still-running task
         for task in [task_b2g, task_g2b]:
             if not task.done():
                 task.cancel()
@@ -542,6 +567,7 @@ async def guacd_tunnel(websocket: WebSocket):
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        # Graceful guacd shutdown
         if guac_client is not None:
             await guac_client.disconnect()
             await guac_client.close()
