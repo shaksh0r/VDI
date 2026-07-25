@@ -1,10 +1,11 @@
-provisioning-service/.env
 auth-service/.env
 auth-service/.venv
 .venv
-Capstone_VDI-openrc.sh
-Capstone_VDI-openrc.sh:Zone.Identifier
 vm-connect.txt
 auth-service/__pycache__
 seed_auth_tests.sql
 models/__pycache__
+provisioning_service/__pycache__
+provisioning_service/models/__pycache__
+provisioning_service/openstack/__pycache__
+provisioning_service/config.py

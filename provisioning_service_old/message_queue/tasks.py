@@ -1,16 +1,16 @@
-from provisioning_service_old.message_queue.celery_app import celery
-from provisioning_service_old.logic.vm import (
+from provisioning_service_old_old.message_queue.celery_app import celery
+from provisioning_service_old_old.logic.vm import (
     get_instances,
     get_detailed_instances,
     create_instance_local_storage,
 )
 
-from provisioning_service_old.logic.network import (
+from provisioning_service_old_old.logic.network import (
     create_floating_ip,
     get_port_by_device,
     attach_floating_ip,
 )
-from provisioning_service_old.message_queue.database import create_database_pool
+from provisioning_service_old_old.message_queue.database import create_database_pool
 import time
 from dotenv import load_dotenv
 import os

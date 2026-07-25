@@ -1,5 +1,5 @@
-from provisioning_service_old.message_queue.celery_app import celery
-from provisioning_service_old.message_queue.tasks import beat_process,fetch_instances
+from provisioning_service_old_old.message_queue.celery_app import celery
+from provisioning_service_old_old.message_queue.tasks import beat_process,fetch_instances
 from datetime import datetime
 import uuid
 
