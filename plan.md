@@ -28,7 +28,7 @@ The mirroring service (guacd WebSocket relay) and the auth service are already b
 | Dockerfile        | `Dockerfile`                                                                                                                       | **Done**                                                                                                                                                                             |
 | Celery infra      | None in new service                                                                                                                | **Needs creation**                                                                                                                                                                   |
 
-### What exists (old `provisioning_service_old/`)
+### What exists (legacy reference code, now merged into `provisioning_service/`)
 
 A working reference implementation that:
 
@@ -99,7 +99,7 @@ The old service uses `asyncio.create_task` with `asyncio.sleep` — lost on rest
 - Accept **Keystone credentials** (auth URL, username, password, project name, user domain, project domain) from configuration
 - On first use (lazy init), authenticate with Keystone's `POST /v3/auth/tokens` to obtain a scoped token
 - The token is returned in the `X-Subject-Token` **response header** (not the body) — the client must capture it
-  - **⚠️ The old `provisioning_service_old/logic/identity.py` has a bug:** it only does `return response.json()` and discards the `X-Subject-Token` header entirely. The new implementation must read `response.headers["X-Subject-Token"]`.
+  - **⚠️ The old `provisioning_service/logic/identity.py` has a bug:** it only does `return response.json()` and discards the `X-Subject-Token` header entirely. The new implementation must read `response.headers["X-Subject-Token"]`.
 - The response body contains `token.expires_at` (ISO 8601 UTC timestamp, e.g. `"2025-01-20T19:38:34.123456Z"`) — the client tracks this
 - The response body ALSO contains a **service catalog** (`token.catalog[]`) listing endpoints for compute, network, image, volume, etc. **Decision:** V1 uses hardcoded service URLs from config (confirmed correct). Service catalog parsing for dynamic endpoint discovery is deferred to V2.
 - Before every API request, check if the token is within a safety margin of expiry (e.g., 5 minutes before `expires_at`). If so, transparently re-authenticate before sending the request.
