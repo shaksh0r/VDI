@@ -36,6 +36,7 @@ DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "20"))
 
 #Auth service
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8003")
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "pyamqp://guest:guest@rabbitmq:5672//")
 
 #Intervals & timeouts
 RECONCILIATION_INTERVAL_SECONDS = int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30"))

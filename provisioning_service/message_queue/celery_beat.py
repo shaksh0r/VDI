@@ -1,17 +1,12 @@
-from provisioning_service_old_old.message_queue.celery_app import celery
-from provisioning_service_old_old.message_queue.tasks import beat_process,fetch_instances
-from datetime import datetime
-import uuid
+from .celery_app import app
 
-import json 
-
-
-
-celery.conf.beat_schedule = {
-    "run-every-5-seconds":{
-        "task":"beat_task",
-        "schedule":10.0,
-        "args":()
-    }
+app.conf.beat_schedule = {
+    "expire-sessions": {
+        "task": "provisioning_service.services.reconciler.expire_sessions_task",
+        "schedule": 30.0,
+    },
+    "replenish-pools": {
+        "task": "provisioning_service.services.reconciler.replenish_pools_task",
+        "schedule": 30.0,
+    },
 }
-

@@ -1,11 +1,14 @@
 from celery import Celery
-from celery.schedules import crontab
+
+from .. import config
 
 app = Celery(
-    "myproject",
-    broker="pyamqp://guest:guest@localhost:5672//",
-    backend="rpc://",  
-    include=["duplicate_tasks"],
+    "provisioning_service",
+    broker=config.CELERY_BROKER_URL,
+    include=[
+        "provisioning_service.services.job_worker",
+        "provisioning_service.services.reconciler",
+    ],
 )
 
 app.conf.update(
@@ -15,10 +18,3 @@ app.conf.update(
     result_serializer="json",
     accept_content=["json"],
 )
-
-app.conf.beat_schedule = {
-    "run-every-30-seconds": {
-        "task": "beat_task",
-        "schedule": 30.0,
-    },
-}
