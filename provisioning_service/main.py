@@ -25,7 +25,12 @@ async def lifespan(app: FastAPI):
                 config.DB_HOST, config.DB_PORT, config.DB_NAME)
 
     app.state.openstack = OpenStackClient(
-        auth_token=config.OPENSTACK_AUTH_TOKEN,
+        auth_url=config.OPENSTACK_AUTH_URL,
+        username=config.OPENSTACK_USERNAME,
+        password=config.OPENSTACK_PASSWORD,
+        project_name=config.OPENSTACK_PROJECT_NAME,
+        user_domain=config.OPENSTACK_USER_DOMAIN_NAME,
+        project_domain=config.OPENSTACK_PROJECT_DOMAIN_NAME,
         compute_url=config.OPENSTACK_COMPUTE_URL,
         network_url=config.OPENSTACK_NETWORK_URL,
         image_url=config.OPENSTACK_IMAGE_URL,
