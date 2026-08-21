@@ -35,6 +35,11 @@ async def list_flavors(client: OpenStackClient) -> dict[str, Any]:
     return resp.json()
 
 
+async def list_flavors_detail(client: OpenStackClient) -> dict[str, Any]:
+    resp = await client.compute_request("GET", "/flavors/detail")
+    return resp.json()
+
+
 async def get_flavor(client: OpenStackClient, flavor_id: str) -> dict[str, Any]:
     resp = await client.compute_request("GET", f"/flavors/{flavor_id}")
     return resp.json()
