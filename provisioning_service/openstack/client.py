@@ -7,16 +7,9 @@ from typing import Any, Optional
 
 import httpx
 
+from .errors import OpenStackError
+
 logger = logging.getLogger(__name__)
-
-
-class OpenStackError(Exception):
-
-    def __init__(self, status_code: int, message: str, body: Any = None):
-        self.status_code = status_code
-        self.message = message
-        self.body = body
-        super().__init__(message)
 
 
 class OpenStackClient:
@@ -48,15 +41,7 @@ class OpenStackClient:
             await self._client.aclose()
             self._client = None
 
-    async def _request(
-        self,
-        method: str,
-        url: str,
-        *,
-        json: Any = None,
-        headers: Optional[dict] = None,
-        max_retries: int = 3,
-    ) -> httpx.Response:
+    async def _request(self,method: str,url: str,*,json: Any = None,headers: Optional[dict] = None,max_retries: int = 3,) -> httpx.Response:
         client = await self._get_client()
 
         _headers = {"X-Auth-Token": self.auth_token}

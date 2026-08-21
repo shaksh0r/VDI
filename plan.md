@@ -161,6 +161,8 @@ Periodic Beat (every 30s)  →  Celery Worker scans user_assignments
   → UPDATE instance status = 'ready', SET assignment.released_at = NOW()
 ```
 
+**Frontend session-expiry contract:** while a session is active, the frontend polls `GET /provision/status` every 15–30s. When the assignment is gone (expired or released), the frontend shows a "session expired" message and closes the WebSocket. **Decision:** frontend polling — no push or teardown call to the mirroring service (out of scope).
+
 **Pool replenishment:**
 
 ```

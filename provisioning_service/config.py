@@ -1,7 +1,17 @@
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 #OpenStack
-OPENSTACK_AUTH_TOKEN  = os.getenv("OPENSTACK_AUTH_TOKEN", "")
+OPENSTACK_AUTH_URL          = os.getenv("OPENSTACK_AUTH_URL", "")
+OPENSTACK_USERNAME          = os.getenv("OPENSTACK_USERNAME", "")
+OPENSTACK_PASSWORD          = os.getenv("OPENSTACK_PASSWORD", "")
+OPENSTACK_PROJECT_NAME      = os.getenv("OPENSTACK_PROJECT_NAME", "")
+OPENSTACK_USER_DOMAIN_NAME  = os.getenv("OPENSTACK_USER_DOMAIN_NAME", "Default")
+OPENSTACK_PROJECT_DOMAIN_NAME = os.getenv("OPENSTACK_PROJECT_DOMAIN_NAME", "Default")
 OPENSTACK_COMPUTE_URL = os.getenv("OPENSTACK_COMPUTE_URL", "http://topcsnova.cloudlab.buet.ac.bd/v2.1")
 OPENSTACK_NETWORK_URL = os.getenv("OPENSTACK_NETWORK_URL", "http://topcsneutron.cloudlab.buet.ac.bd/v2.0")
 OPENSTACK_IMAGE_URL   = os.getenv("OPENSTACK_IMAGE_URL",   "http://topcsglance.cloudlab.buet.ac.bd/v2")
