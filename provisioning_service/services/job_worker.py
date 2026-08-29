@@ -4,6 +4,8 @@ import asyncio
 import json
 import time
 
+import httpx
+
 from .. import config
 from ..db import create_database_pool
 from ..message_queue.celery_app import app
@@ -38,6 +40,7 @@ async def _fail_job(conn, job_id: str, message: str, details=None) -> None:
         """
         UPDATE provisioning_jobs
         SET status = 'failed',
+            started_at = COALESCE(started_at, NOW()),
             error_message = $1,
             error_details = $2::jsonb,
             completed_at = NOW()
@@ -326,7 +329,9 @@ async def _finalize_vm_async(task, instance_id: str, openstack_vm_id: str, job_i
             await conn.execute(
                 """
                 UPDATE provisioning_jobs
-                SET status = 'completed', completed_at = NOW()
+                SET status = 'completed',
+                    started_at = COALESCE(started_at, NOW()),
+                    completed_at = NOW()
                 WHERE job_id = $1
                 """,
                 job_id,
@@ -347,6 +352,127 @@ async def _finalize_vm_async(task, instance_id: str, openstack_vm_id: str, job_i
                         """,
                         instance_id,
                     )
+        raise
+
+    finally:
+        if client is not None:
+            await client.close()
+        if pool is not None:
+            await pool.close()
+
+
+def _check_deleted(response: httpx.Response, resource: str) -> None:
+    if response.status_code in (200, 202, 204, 404):
+        return
+    body = None
+    try:
+        body = response.json()
+    except Exception:
+        body = response.text
+    raise OpenStackError(
+        response.status_code, f"failed to delete {resource}", body
+    )
+
+
+@app.task(bind=True)
+def delete_vm_task(self, instance_id: str, job_id: str):
+    return asyncio.run(_delete_vm_async(self, instance_id, job_id))
+
+
+async def _delete_vm_async(task, instance_id: str, job_id: str):
+    pool = None
+    client = None
+    try:
+        pool = await create_database_pool(min_size=1, max_size=2)
+
+        async with pool.acquire() as conn:
+            instance = await conn.fetchrow(
+                "SELECT * FROM desktop_instances WHERE instance_id = $1",
+                instance_id,
+            )
+            if instance is None or instance["status"] == "deleted":
+                return None
+
+            active = await conn.fetchval(
+                """
+                SELECT 1 FROM user_assignments
+                WHERE instance_id = $1 AND released_at IS NULL
+                LIMIT 1
+                """,
+                instance_id,
+            )
+            if active:
+                await _fail_job(conn, job_id, "instance has an active assignment")
+                return None
+
+            await conn.execute(
+                """
+                UPDATE desktop_instances
+                SET status = 'deleting', updated_at = NOW()
+                WHERE instance_id = $1
+                """,
+                instance_id,
+            )
+            await conn.execute(
+                """
+                UPDATE provisioning_jobs
+                SET status = 'processing', started_at = NOW()
+                WHERE job_id = $1
+                """,
+                job_id,
+            )
+
+        client = _get_os_client()
+
+        details = {}
+        if instance["connection_details"]:
+            details = json.loads(instance["connection_details"])
+        fip_id = details.get("fip_id")
+        if fip_id:
+            response = await neutron.delete_floating_ip(client, fip_id)
+            _check_deleted(response, f"floating ip {fip_id}")
+
+        openstack_vm_id = instance["openstack_vm_id"]
+        if openstack_vm_id:
+            response = await nova.delete_server(client, openstack_vm_id)
+            _check_deleted(response, f"server {openstack_vm_id}")
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE desktop_instances
+                    SET status = 'deleted', updated_at = NOW()
+                    WHERE instance_id = $1
+                    """,
+                    instance_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE desktop_pools
+                    SET current_count = GREATEST(current_count - 1, 0),
+                        updated_at = NOW()
+                    WHERE pool_id = $1
+                    """,
+                    instance["pool_id"],
+                )
+                await conn.execute(
+                    """
+                    UPDATE provisioning_jobs
+                    SET status = 'completed',
+                        started_at = COALESCE(started_at, NOW()),
+                        completed_at = NOW()
+                    WHERE job_id = $1
+                    """,
+                    job_id,
+                )
+
+        return None
+
+    except Exception as exc:
+        if pool is not None:
+            async with pool.acquire() as conn:
+                await _handle_task_error(task, conn, job_id, exc)
         raise
 
     finally:

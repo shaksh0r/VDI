@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import httpx
+
 from .client import OpenStackClient
 
 async def list_networks(client: OpenStackClient) -> dict[str, Any]:
@@ -47,8 +49,8 @@ async def create_floating_ip(
     return resp.json()
 
 
-async def delete_floating_ip(client: OpenStackClient, fip_id: str) -> None:
-    await client.network_request("DELETE", f"/floatingips/{fip_id}")
+async def delete_floating_ip(client: OpenStackClient, fip_id: str) -> httpx.Response:
+    return await client.network_request("DELETE", f"/floatingips/{fip_id}")
 
 
 async def update_floating_ip(
