@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from .. import config
 from ..db import create_database_pool
 from ..message_queue.celery_app import app
 from ..openstack import OpenStackClient
+from ..openstack import neutron
 from ..openstack import nova
 from ..openstack.errors import OpenStackError
+
+
+class _PermanentFailure(Exception):
+    pass
 
 
 def _get_os_client() -> OpenStackClient:
@@ -41,6 +47,34 @@ async def _fail_job(conn, job_id: str, message: str, details=None) -> None:
         json.dumps(details or {}),
         job_id,
     )
+
+
+async def _handle_task_error(task, conn, job_id: str, exc: Exception) -> bool:
+    job = await conn.fetchrow(
+        "SELECT retry_count, max_retries FROM provisioning_jobs WHERE job_id = $1",
+        job_id,
+    )
+    permanent = isinstance(exc, _PermanentFailure) or (
+        isinstance(exc, OpenStackError) and exc.status_code < 500
+    )
+    if job is not None and not permanent and job["retry_count"] < job["max_retries"]:
+        new_count = job["retry_count"] + 1
+        await conn.execute(
+            """
+            UPDATE provisioning_jobs
+            SET retry_count = $1,
+                error_message = $2,
+                error_details = $3::jsonb
+            WHERE job_id = $4
+            """,
+            new_count,
+            str(exc),
+            json.dumps({"type": type(exc).__name__}),
+            job_id,
+        )
+        raise task.retry(countdown=2 ** new_count, exc=exc)
+    await _fail_job(conn, job_id, str(exc), {"type": type(exc).__name__})
+    return True
 
 
 @app.task(bind=True)
@@ -111,7 +145,11 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
                 if instance_row["openstack_vm_id"]:
                     app.send_task(
                         "provisioning_service.services.job_worker.finalize_vm_task",
-                        args=[str(instance_id), instance_row["openstack_vm_id"]],
+                        args=[
+                            str(instance_id),
+                            instance_row["openstack_vm_id"],
+                            job_id,
+                        ],
                     )
                     return (str(instance_id), instance_row["openstack_vm_id"])
 
@@ -164,7 +202,7 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
 
         app.send_task(
             "provisioning_service.services.job_worker.finalize_vm_task",
-            args=[str(instance_id), openstack_vm_id],
+            args=[str(instance_id), openstack_vm_id, job_id],
         )
 
         return (str(instance_id), openstack_vm_id)
@@ -172,34 +210,143 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
     except Exception as exc:
         if pool is not None:
             async with pool.acquire() as conn:
-                job = await conn.fetchrow(
-                    "SELECT retry_count, max_retries FROM provisioning_jobs WHERE job_id = $1",
-                    job_id,
+                await _handle_task_error(task, conn, job_id, exc)
+        raise
+
+    finally:
+        if client is not None:
+            await client.close()
+        if pool is not None:
+            await pool.close()
+
+
+@app.task(bind=True)
+def finalize_vm_task(self, instance_id: str, openstack_vm_id: str, job_id: str):
+    return asyncio.run(
+        _finalize_vm_async(self, instance_id, openstack_vm_id, job_id)
+    )
+
+
+async def _finalize_vm_async(task, instance_id: str, openstack_vm_id: str, job_id: str):
+    pool = None
+    client = None
+    try:
+        pool = await create_database_pool(min_size=1, max_size=2)
+
+        async with pool.acquire() as conn:
+            instance = await conn.fetchrow(
+                "SELECT * FROM desktop_instances WHERE instance_id = $1",
+                instance_id,
+            )
+            if instance is None:
+                return None
+            if instance["status"] != "provisioning":
+                return None
+
+        client = _get_os_client()
+
+        deadline = time.time() + config.VM_CREATION_TIMEOUT_SECONDS
+        server = None
+        while True:
+            response = await nova.get_server(client, openstack_vm_id)
+            if "server" not in response:
+                raise _PermanentFailure(
+                    f"server {openstack_vm_id} not found: {response}"
                 )
-                permanent = isinstance(exc, OpenStackError) and exc.status_code < 500
-                if (
-                    job is not None
-                    and not permanent
-                    and job["retry_count"] < job["max_retries"]
-                ):
-                    new_count = job["retry_count"] + 1
+            server = response["server"]
+            if server["status"] == "ACTIVE":
+                break
+            if server["status"] == "ERROR":
+                raise _PermanentFailure(
+                    f"nova server in ERROR state: {server.get('fault', {})}"
+                )
+            if time.time() >= deadline:
+                raise _PermanentFailure(
+                    f"VM did not reach ACTIVE within "
+                    f"{config.VM_CREATION_TIMEOUT_SECONDS}s"
+                )
+            await asyncio.sleep(config.VM_CREATION_POLL_INTERVAL)
+
+        private_ip = None
+        for addr_list in server.get("addresses", {}).values():
+            for addr in addr_list:
+                if addr.get("OS-EXT-IPS:type") == "fixed":
+                    private_ip = addr["addr"]
+                    break
+            if private_ip:
+                break
+
+        ports = (await neutron.list_ports(client, device_id=openstack_vm_id)).get(
+            "ports", []
+        )
+        if not ports:
+            raise _PermanentFailure(
+                f"no neutron port found for server {openstack_vm_id}"
+            )
+        port_id = ports[0]["id"]
+
+        fip_id = (instance["connection_details"] or {}).get("fip_id")
+        if fip_id:
+            fips = (await neutron.list_floating_ips(client)).get("floatingips", [])
+            fip = next((f for f in fips if f["id"] == fip_id), None)
+            if fip is None:
+                raise _PermanentFailure(
+                    f"stored floating ip {fip_id} no longer exists"
+                )
+            floating_ip_addr = fip["floating_ip_address"]
+        else:
+            created = await neutron.create_floating_ip(
+                client,
+                floating_network_id=config.EXTERNAL_NETWORK_ID,
+                port_id=port_id,
+                description=f"vdi-{openstack_vm_id[:8]}",
+            )
+            fip = created.get("floatingip", {})
+            fip_id = fip.get("id")
+            if not fip_id:
+                raise _PermanentFailure(f"failed to allocate floating ip: {created}")
+            floating_ip_addr = fip.get("floating_ip_address")
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE desktop_instances
+                SET status = 'ready',
+                    floating_ip = $1,
+                    private_ip = $2,
+                    connection_details = $3::jsonb,
+                    provisioned_at = NOW()
+                WHERE instance_id = $4
+                """,
+                floating_ip_addr,
+                private_ip,
+                json.dumps({"fip_id": fip_id, "fip_address": floating_ip_addr}),
+                instance_id,
+            )
+            await conn.execute(
+                """
+                UPDATE provisioning_jobs
+                SET status = 'completed', completed_at = NOW()
+                WHERE job_id = $1
+                """,
+                job_id,
+            )
+
+        return (floating_ip_addr, private_ip)
+
+    except Exception as exc:
+        if pool is not None:
+            async with pool.acquire() as conn:
+                failed = await _handle_task_error(task, conn, job_id, exc)
+                if failed:
                     await conn.execute(
                         """
-                        UPDATE provisioning_jobs
-                        SET retry_count = $1,
-                            error_message = $2,
-                            error_details = $3::jsonb
-                        WHERE job_id = $4
+                        UPDATE desktop_instances
+                        SET status = 'error', updated_at = NOW()
+                        WHERE instance_id = $1 AND status = 'provisioning'
                         """,
-                        new_count,
-                        str(exc),
-                        json.dumps({"type": type(exc).__name__}),
-                        job_id,
+                        instance_id,
                     )
-                    raise task.retry(countdown=2 ** new_count, exc=exc)
-                await _fail_job(
-                    conn, job_id, str(exc), {"type": type(exc).__name__}
-                )
         raise
 
     finally:
