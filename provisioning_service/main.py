@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import config
+from .api import admin, pools, vms
 from .db import create_database_pool
 from .openstack import OpenStackClient
 
@@ -63,6 +64,10 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(pools.router)
+app.include_router(vms.router)
+app.include_router(admin.router)
 
 
 
