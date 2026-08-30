@@ -36,11 +36,14 @@
       <!-- Center: session identity -->
       <div class="chrome__session">
         <div class="chrome__session-dot" id="session-dot"></div>
-        <span class="chrome__session-text" id="session">No active session</span>
+        <span class="chrome__session-text" id="session">Not signed in</span>
       </div>
 
       <!-- Right: status -->
       <div class="chrome__right">
+        <button class="btn btn--logout" id="logout" aria-label="Sign out" hidden>
+          Sign out
+        </button>
         <div class="status-chip" id="status" data-ok="false">
           <span class="status-chip__ring"></span>
           <span class="status-chip__label">Disconnected</span>
@@ -66,7 +69,7 @@
 
         <div class="btn-divider"></div>
 
-        <button class="btn btn--disconnect" id="disconnect" aria-label="Disconnect session">
+        <button class="btn btn--disconnect" id="disconnect" aria-label="Disconnect session" disabled>
           <svg class="btn__icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
@@ -89,8 +92,23 @@
     ════════════════════════════════════════════════════ -->
     <main class="viewport" id="viewport">
 
-      <!-- Idle state — shown before first connection -->
-      <div class="idle-state" id="placeholder">
+      <!-- Login state — shown when not signed in -->
+      <div class="login-state" id="login" hidden>
+        <div class="login-state__card">
+          <p class="login-state__heading">Sign in to VDI</p>
+          <form class="login-state__form" id="login-form">
+            <input id="login-username" type="text" placeholder="Username"
+                   autocomplete="username" autocapitalize="none" required />
+            <input id="login-password" type="password" placeholder="Password"
+                   autocomplete="current-password" required />
+            <button type="submit" class="btn btn--connect">Sign in</button>
+          </form>
+          <p class="login-state__error" id="login-error"></p>
+        </div>
+      </div>
+
+      <!-- Idle state — logged in, no active session -->
+      <div class="idle-state" id="placeholder" hidden>
         <div class="idle-state__glyph">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
             <rect x="4" y="6" width="32" height="22" rx="3" stroke="currentColor" stroke-width="1.5"/>
@@ -100,12 +118,12 @@
         </div>
         <p class="idle-state__heading">No Session Active</p>
         <p class="idle-state__body">
-          Press <kbd>Connect</kbd> to initiate the remote desktop stream
+          Press <kbd>Connect</kbd> to request a VM and start the remote desktop stream
         </p>
       </div>
 
       <!-- Guacamole mounts its display element here -->
-      <div class="rdp-surface" id="display"></div>
+      <div class="rdp-surface" id="display" hidden></div>
 
     </main>
 
@@ -123,11 +141,16 @@
           <span class="infobar__key">Protocol</span>
           <span class="infobar__val" id="sb-protocol">RDP</span>
         </span>
+        <span class="infobar__divider"></span>
+        <span class="infobar__item">
+          <span class="infobar__key">Session</span>
+          <span class="infobar__val" id="sb-session"></span>
+        </span>
       </div>
       <div class="infobar__right">
         <span class="infobar__item">
           <span class="infobar__key">VDI Mirror</span>
-          <span class="infobar__val">1.0.0</span>
+          <span class="infobar__val">1.1.0</span>
         </span>
       </div>
     </footer>

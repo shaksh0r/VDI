@@ -581,3 +581,85 @@ body.is-connected .chrome__session-dot {
   background: var(--c-accent-bg);
   color: var(--c-text-1);
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   LOGIN STATE — sign-in card
+═══════════════════════════════════════════════════════════════════ */
+.login-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.login-state__card {
+  width: min(320px, calc(100% - 48px));
+  padding: 28px 24px 22px;
+  border-radius: 16px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line-2);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-state__heading {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--c-text-1);
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.login-state__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-state__form input {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--c-line-3);
+  background: var(--c-base);
+  color: var(--c-text-1);
+  font-size: 13px;
+  font-family: var(--f-ui);
+}
+
+.login-state__form input::placeholder { color: var(--c-text-4); }
+
+.login-state__form input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.login-state__form .btn {
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.login-state__error {
+  font-size: 12px;
+  color: var(--c-err);
+  text-align: center;
+  min-height: 16px;
+}
+
+/* ─── Sign out button (chrome rail) ─────────────────────────────── */
+.btn--logout {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--c-line-3);
+  background: transparent;
+  color: var(--c-text-2);
+  cursor: pointer;
+}
+
+.btn--logout:hover {
+  border-color: var(--c-line-2);
+  color: var(--c-text-1);
+}
