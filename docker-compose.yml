@@ -2,6 +2,7 @@ services:
   database:
     build:
       context: ./database
+      network: host
     container_name: database
     networks:
       - app_net
@@ -124,6 +125,12 @@ services:
     container_name: auth-service
     networks:
       - app_net
+    environment:
+      DB_USER: shakshor
+      DB_PASSWORD: shakshor
+      DB_NAME: VDI
+      DB_HOST: database
+      DB_PORT: "5432"
     ports:
       - "8003:8003"
     dns:
@@ -149,9 +156,10 @@ services:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-server
     command: >
-      uvicorn provisioning_service.server:app
+      uvicorn provisioning_service.main:app
       --host 0.0.0.0
       --port 8001
     networks:
@@ -179,6 +187,7 @@ services:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-worker
     command: >
       celery -A provisioning_service.message_queue.celery_app worker
@@ -206,6 +215,7 @@ services:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-beat
     command: >
       celery -A provisioning_service.message_queue.celery_beat beat

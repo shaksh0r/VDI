@@ -159,21 +159,22 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
         payload = {
             "server": {
                 "name": f"vdi-{str(instance_id)[:8]}",
-                "imageRef": pool_row["base_image_id"],
                 "flavorRef": pool_row["flavor_id"],
-                "key_name": config.DEFAULT_KEY_NAME,
+                "key_name": config.VM_KEY_NAME,
                 "networks": [{"uuid": pool_row["network_id"]}],
-                "security_groups": [{"name": "default"}],
+                "security_groups": [{"name": config.VM_SECURITY_GROUP}],
+                "block_device_mapping_v2": [
+                    {
+                        "boot_index": 0,
+                        "uuid": pool_row["base_image_id"],
+                        "source_type": "image",
+                        "destination_type": "volume",
+                        "volume_size": config.VM_BOOT_VOLUME_SIZE_GB,
+                        "delete_on_termination": True,
+                    }
+                ],
             }
         }
-        if config.EXTRA_SEC_GROUP_1:
-            payload["server"]["security_groups"].append(
-                {"name": config.EXTRA_SEC_GROUP_1}
-            )
-        if config.EXTRA_SEC_GROUP_2:
-            payload["server"]["security_groups"].append(
-                {"name": config.EXTRA_SEC_GROUP_2}
-            )
 
         client = _get_os_client()
         response = await nova.create_server(client, payload)

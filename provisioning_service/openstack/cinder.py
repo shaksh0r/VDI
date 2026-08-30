@@ -10,6 +10,11 @@ async def list_volumes(client: OpenStackClient) -> dict[str, Any]:
     return resp.json()
 
 
+async def list_volumes_detail(client: OpenStackClient) -> dict[str, Any]:
+    resp = await client.volume_request("GET", "/volumes/detail")
+    return resp.json()
+
+
 async def get_volume(client: OpenStackClient, volume_id: str) -> dict[str, Any]:
     resp = await client.volume_request("GET", f"/volumes/{volume_id}")
     return resp.json()
