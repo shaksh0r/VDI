@@ -2,7 +2,9 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,8 +36,13 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 GUACD_HOST = os.getenv("GUACD_HOST", "127.0.0.1")
 GUACD_PORT = int(os.getenv("GUACD_PORT", "4822"))
 
-# Target VM / RDP
-VM_HOST     = os.getenv("VM_HOST",     "")
+# Service-to-service endpoints
+AUTH_SERVICE_URL         = os.getenv("AUTH_SERVICE_URL",         "http://auth-service:8003")
+PROVISIONING_SERVICE_URL = os.getenv("PROVISIONING_SERVICE_URL", "http://provisioning-server:8001")
+
+# Target VM / RDP — VM_HOST is now per-session: it is resolved from the
+# user's active provisioning assignment at WebSocket connect time, never
+# from client-supplied parameters or module-level config.
 VM_PORT     = os.getenv("VM_PORT",     "3389")
 VM_USERNAME = os.getenv("VM_USERNAME", "")
 VM_PASSWORD = os.getenv("VM_PASSWORD", "")
@@ -61,7 +68,9 @@ VM_CLIENT_NAME             = os.getenv("VM_CLIENT_NAME",             "vdi-mirror
 
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 logger.info("  guacd : %s:%s", GUACD_HOST, GUACD_PORT)
-logger.info("  VM    : %s:%s  protocol=%s", VM_HOST or "⚠ NOT SET", VM_PORT, VM_PROTOCOL)
+logger.info("  auth  : %s", AUTH_SERVICE_URL)
+logger.info("  prov  : %s", PROVISIONING_SERVICE_URL)
+logger.info("  RDP   : port=%s protocol=%s user=%s", VM_PORT, VM_PROTOCOL, VM_USERNAME)
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
@@ -243,14 +252,13 @@ class AsyncGuacamoleClient:
 
 def _missing_vars() -> list[str]:
     required = {
-        "VM_HOST":     VM_HOST,
         "VM_USERNAME": VM_USERNAME,
         "VM_PASSWORD": VM_PASSWORD,
     }
     return [k for k, v in required.items() if not v]
 
 
-async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamoleClient:
+async def _make_guac_client(hostname: str, width: int, height: int, dpi: int) -> AsyncGuacamoleClient:
     missing = _missing_vars()
     if missing:
         raise ValueError(f"Missing required env vars: {', '.join(missing)}")
@@ -259,7 +267,7 @@ async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamole
     await client.connect()
     await client.handshake(
         protocol                   = VM_PROTOCOL,
-        hostname                   = VM_HOST,
+        hostname                   = hostname,
         port                       = VM_PORT,
         username                   = VM_USERNAME,
         password                   = VM_PASSWORD,
@@ -280,6 +288,72 @@ async def _make_guac_client(width: int, height: int, dpi: int) -> AsyncGuacamole
         client_name                = VM_CLIENT_NAME,
     )
     return client
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Session Auth Helpers (service-to-service)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AuthTokenError(Exception):
+    """The supplied token is missing, invalid, or expired."""
+
+
+class AuthServiceUnreachable(Exception):
+    """auth-service or provisioning-service could not be reached."""
+
+
+async def _validate_auth_token(token: str) -> dict:
+    """Validate the user's Bearer token against auth-service /auth/me.
+
+    Mirrors provisioning's get_current_user: returns the user dict
+    {user_id, username, role, expires_at} on success.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{AUTH_SERVICE_URL}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise AuthServiceUnreachable("auth-service unreachable") from exc
+
+    if resp.status_code == status.HTTP_401_UNAUTHORIZED:
+        raise AuthTokenError("invalid or expired token")
+    if resp.status_code != status.HTTP_200_OK:
+        raise AuthServiceUnreachable(
+            f"unexpected auth-service response: {resp.status_code}"
+        )
+    return resp.json()
+
+
+async def _fetch_active_session(token: str) -> dict | None:
+    """Resolve the user's active VM assignment via provisioning /provision/status.
+
+    Returns the response dict {has_assignment, instance_id, floating_ip,
+    pool_name, desktop_type, status, assigned_at, expires_at} or None when
+    the user has no active assignment. The VM target is always taken from
+    this server-side lookup — never from client-supplied parameters.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{PROVISIONING_SERVICE_URL}/provision/status",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise AuthServiceUnreachable("provisioning-service unreachable") from exc
+
+    if resp.status_code == status.HTTP_401_UNAUTHORIZED:
+        raise AuthTokenError("token rejected by provisioning-service")
+    if resp.status_code != status.HTTP_200_OK:
+        raise AuthServiceUnreachable(
+            f"unexpected provisioning-service response: {resp.status_code}"
+        )
+
+    data = resp.json()
+    if not data.get("has_assignment"):
+        return None
+    return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -326,11 +400,11 @@ async def health_check():
         "status":      "ready",
         "guacd_host":  GUACD_HOST,
         "guacd_port":  GUACD_PORT,
-        "vm_host":     VM_HOST,
         "vm_port":     VM_PORT,
         "vm_protocol": VM_PROTOCOL,
         "vm_security": VM_SECURITY,
         "vm_domain":   VM_DOMAIN or None,
+        "target":      "per-session (resolved via provisioning-service)",
     }
 
 
@@ -345,7 +419,7 @@ async def get_session():
     return {
         "ok": True,
         "connection": {
-            "host":           VM_HOST,
+            "host":           None,  # per-session: resolved at WS connect time
             "port":           VM_PORT,
             "protocol":       VM_PROTOCOL,
             "username":       VM_USERNAME,
@@ -366,7 +440,11 @@ async def get_session():
 @app.websocket("/ws/guacd")
 async def guacd_tunnel(websocket: WebSocket):
     """
-    Fully async bidirectional relay: Browser WebSocket ↔ guacd TCP.
+    Authenticated per-session relay: Browser WebSocket ↔ guacd TCP.
+
+    The VM target is resolved server-side from the caller's active
+    provisioning assignment (token → auth-service → provisioning-service),
+    never from client-supplied query parameters.
 
     FIX: Uses a shared asyncio.Event (ws_closed) to signal both relay
     tasks the moment the WebSocket closes. This prevents the ASGI race
@@ -374,8 +452,9 @@ async def guacd_tunnel(websocket: WebSocket):
     after the socket has already been closed by browser_to_guacd's exit.
     """
 
-    # ── Step 1: Parse viewport from URL query params ──────────────────────
+    # ── Step 1: Parse query params ──────────────────────────────────────
     params = dict(websocket.query_params)
+    token = params.get("token", "")
     try:
         width  = int(params.get("width",  VM_WIDTH))
         height = int(params.get("height", VM_HEIGHT))
@@ -390,7 +469,58 @@ async def guacd_tunnel(websocket: WebSocket):
         width, height, dpi, websocket.client,
     )
 
-    # ── Step 3: Validate environment ──────────────────────────────────────
+    # ── Step 3: Authenticate the caller ───────────────────────────────────
+    if not token:
+        logger.warning("WS rejected: missing token (client=%s)", websocket.client)
+        await websocket.close(code=1008, reason="missing token")
+        return
+
+    try:
+        user = await _validate_auth_token(token)
+    except AuthTokenError as exc:
+        logger.warning("WS rejected: %s (client=%s)", exc, websocket.client)
+        await websocket.close(code=1008, reason="invalid or expired token")
+        return
+    except AuthServiceUnreachable as exc:
+        logger.error("WS rejected: %s", exc)
+        await websocket.close(code=1011, reason="auth service unreachable")
+        return
+
+    # ── Step 4: Resolve the user's active VM assignment ───────────────────
+    try:
+        session = await _fetch_active_session(token)
+    except AuthTokenError as exc:
+        logger.warning("WS rejected: %s", exc)
+        await websocket.close(code=1008, reason="invalid or expired token")
+        return
+    except AuthServiceUnreachable as exc:
+        logger.error("WS rejected: %s", exc)
+        await websocket.close(code=1011, reason="provisioning service unreachable")
+        return
+
+    if session is None:
+        logger.warning(
+            "WS rejected: no active VM session (user=%s)",
+            user.get("user_id"),
+        )
+        await websocket.close(code=1011, reason="no active VM session")
+        return
+
+    vm_host = session.get("floating_ip")
+    if not vm_host:
+        logger.error(
+            "WS rejected: assignment has no floating_ip (instance=%s)",
+            session.get("instance_id"),
+        )
+        await websocket.close(code=1011, reason="assigned VM has no address")
+        return
+
+    logger.info(
+        "WS authenticated  user=%s  vm=%s  instance=%s",
+        user.get("user_id"), vm_host, session.get("instance_id"),
+    )
+
+    # ── Step 5: Validate environment ──────────────────────────────────────
     missing = _missing_vars()
     if missing:
         reason = f"Server misconfigured: missing {', '.join(missing)}"
@@ -398,24 +528,57 @@ async def guacd_tunnel(websocket: WebSocket):
         await websocket.close(code=1011, reason=reason)
         return
 
-    # ── Step 4: Guacamole handshake ───────────────────────────────────────
+    # ── Step 6: Guacamole handshake (per-session VM target) ───────────────
     guac_client: AsyncGuacamoleClient | None = None
     try:
-        guac_client = await _make_guac_client(width, height, dpi)
+        guac_client = await _make_guac_client(vm_host, width, height, dpi)
         logger.info(
             "guacd handshake OK ✅  vm=%s:%s  viewport=%dx%d",
-            VM_HOST, VM_PORT, width, height,
+            vm_host, VM_PORT, width, height,
         )
     except Exception as exc:
         logger.error("guacd handshake failed: %s", exc)
         await websocket.close(code=1011, reason="guacd handshake failed")
         return
 
-    # ── Step 5: Bidirectional async relay ─────────────────────────────────
+    # ── Step 7: Bidirectional async relay + session-expiry watchdog ───────
 
     # FIX: Shared shutdown event — set by whichever side closes first.
     # Both tasks check this before attempting any further sends/receives.
     ws_closed = asyncio.Event()
+
+    async def session_expiry_watcher() -> None:
+        """
+        Close the WS when the provisioning session expires. This is a UX
+        signal only — the authoritative release lives in provisioning's
+        expire-sessions beat, so no release call is made here.
+        """
+        expires_at = session.get("expires_at")
+        if not expires_at:
+            return
+        try:
+            expires_dt = datetime.fromisoformat(expires_at)
+        except (TypeError, ValueError):
+            logger.warning("session_expiry_watcher: unparseable expires_at %r", expires_at)
+            return
+        if expires_dt.tzinfo is None:
+            now = datetime.utcnow()
+        else:
+            now = datetime.now(timezone.utc)
+        remaining = (expires_dt - now).total_seconds()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        if ws_closed.is_set():
+            return
+        logger.info(
+            "session expired — closing WS (user=%s, instance=%s)",
+            user.get("user_id"), session.get("instance_id"),
+        )
+        ws_closed.set()
+        try:
+            await websocket.close(code=1012, reason="session expired")
+        except Exception:
+            pass
 
     async def browser_to_guacd() -> None:
         """
@@ -495,10 +658,11 @@ async def guacd_tunnel(websocket: WebSocket):
 
     task_b2g = asyncio.create_task(browser_to_guacd(), name="browser→guacd")
     task_g2b = asyncio.create_task(guacd_to_browser(), name="guacd→browser")
+    task_exp = asyncio.create_task(session_expiry_watcher(), name="session-expiry")
 
     try:
         done, pending = await asyncio.wait(
-            [task_b2g, task_g2b],
+            [task_b2g, task_g2b, task_exp],
             return_when=asyncio.FIRST_COMPLETED,
         )
         logger.info(
