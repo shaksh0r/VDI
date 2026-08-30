@@ -1,7 +1,7 @@
 services:
   guacd:
     image: guacamole/guacd
-    container_name: guacd
+    container_name: guacd_
     networks:
       - guac_net
     restart: always
@@ -17,11 +17,11 @@ services:
       context: .
       dockerfile: Dockerfile
       network: host
-    container_name: fastapi
+    container_name: fastapi_
     networks:
       - guac_net
     ports:
-      - "8000:8000"
+      - 8000:8000 
     depends_on:
       guacd:
         condition: service_healthy
@@ -36,4 +36,4 @@ services:
 networks:
   guac_net:
     driver: bridge
-    name: guacamole_net
+    name: guacamole_net_
