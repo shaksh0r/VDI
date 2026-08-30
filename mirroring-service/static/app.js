@@ -11,17 +11,23 @@
 
 // ── Service endpoints ─────────────────────────────────────────────────────────
 // Ports match the published compose ports. Overridable via
-// ?auth=http://host:port&prov=http://host:port for other deployments.
+// ?auth=http://host:port&prov=http://host:port, or via the mirroring
+// service's /api/config (AUTH_PUBLIC_URL / PROVISION_PUBLIC_URL) which
+// wins when set (reverse-proxy / TLS deployment).
 var AUTH_PORT = 8003;
 var PROV_PORT = 8001;
+var AUTH_API_BASE   = null;
+var PROV_API_BASE   = null;
 
 function authApiBase() {
+  if (AUTH_API_BASE) return AUTH_API_BASE;
   var p = new URLSearchParams(location.search);
   if (p.get("auth")) return p.get("auth");
   return location.protocol + "//" + location.hostname + ":" + AUTH_PORT;
 }
 
 function provApiBase() {
+  if (PROV_API_BASE) return PROV_API_BASE;
   var p = new URLSearchParams(location.search);
   if (p.get("prov")) return p.get("prov");
   return location.protocol + "//" + location.hostname + ":" + PROV_PORT;
@@ -252,10 +258,13 @@ function RawTunnel(wsUrl) {
   this.sendMessage = function() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     if (arguments.length === 0) return;
+    var enc = new TextEncoder();
     var parts = [];
     for (var i = 0; i < arguments.length; i++) {
       var val = String(arguments[i]);
-      parts.push(val.length + "." + val);
+      // Length prefix is the UTF-8 BYTE length — val.length (UTF-16 units)
+      // corrupts non-ASCII values (e.g. passwords with accented characters).
+      parts.push(enc.encode(val).length + "." + val);
     }
     socket.send(parts.join(",") + ";");
   };
@@ -313,9 +322,13 @@ function buildTunnelUrl() {
 }
 
 function buildConnectParam() {
+  // Clamped to the same sane ranges the server enforces.
   var width  = displayEl.clientWidth  || window.innerWidth  || 1280;
   var height = displayEl.clientHeight || window.innerHeight || 720;
   var dpi    = Math.round((window.devicePixelRatio || 1) * 96);
+  width  = Math.min(7680, Math.max(640,  width));
+  height = Math.min(4320, Math.max(480,  height));
+  dpi    = Math.min(288,  Math.max(48,   dpi));
   var parts  = ["width=" + width, "height=" + height, "dpi=" + dpi];
   if (token) parts.push("token=" + encodeURIComponent(token));
   return parts.join("&");
@@ -323,6 +336,12 @@ function buildConnectParam() {
 
 
 // ── Input handlers ────────────────────────────────────────────────────────────
+// NOTE: Guacamole.Keyboard attaches keydown/keyup listeners on `document`
+// in its constructor and exposes no detach API in 1.3.0. Creating a new
+// instance per connect leaks document-level listeners, so a single instance
+// is created once and reused; only the callbacks are rewired.
+var keyboardSingleton = null;
+
 function attachInputHandlers(c) {
   var el = c.getDisplay().getElement();
 
@@ -331,7 +350,8 @@ function attachInputHandlers(c) {
   mouse.onmouseup   = function(s) { c.sendMouseState(s, true); };
   mouse.onmousemove = function(s) { c.sendMouseState(s, true); };
 
-  keyboard           = new Guacamole.Keyboard(document);
+  if (!keyboardSingleton) keyboardSingleton = new Guacamole.Keyboard(document);
+  keyboard = keyboardSingleton;
   keyboard.onkeydown = function(k) { c.sendKeyEvent(1, k); };
   keyboard.onkeyup   = function(k) { c.sendKeyEvent(0, k); };
 }
@@ -625,6 +645,16 @@ document.addEventListener("MSFullscreenChange",     onViewportResize);
 
 // ── Initial state ─────────────────────────────────────────────────────────────
 (function init() {
+  // Service URLs from the mirroring service (wins when set — proxy/TLS
+  // deployments); falls back to port derivation per function above.
+  fetch("/api/config")
+    .then(function (r) { return r.json(); })
+    .then(function (cfg) {
+      if (cfg && cfg.auth)     AUTH_API_BASE = cfg.auth;
+      if (cfg && cfg.provision) PROV_API_BASE = cfg.provision;
+    })
+    .catch(function () { /* same-origin config is optional */ });
+
   if (token) {
     try {
       tokenUser = JSON.parse(sessionStorage.getItem("vdi_user") || "null");

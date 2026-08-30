@@ -1,59 +1,91 @@
 # VDI Mirroring Service
 
-A FastAPI-based web service that proxies Guacamole daemon (guacd) to provide remote desktop access through a web browser. This service retrieves connection details from a PostgreSQL database and manages WebSocket connections between clients and the Guacamole remote desktop gateway.
+A FastAPI service that mirrors a provisioned VM into a browser window via
+Apache Guacamole. It is one component of the VDI stack:
 
-## Overview
+```
+browser ── POST /auth/login ──────────────────────► auth-service (token)
+browser ── POST /provision/connect (Bearer) ──────► provisioning (floating_ip)
+browser ── WS  /ws/guacd?token=… (Guacamole) ─────► this service  (RDP stream)
+browser ── GET /provision/status (poll) ──────────► provisioning (expiry)
+browser ── POST /provision/disconnect ────────────► provisioning (release)
+```
 
-The mirroring service acts as a bridge between web clients and Guacamole, enabling secure remote desktop access (RDP, VNC, SSH, etc.). It handles:
-- Web interface serving static files
-- WebSocket proxy connections to guacd
-- Database integration for user session management
-- CORS support for cross-origin requests
+The service serves the frontend (`static/`), authenticates the WebSocket
+against auth-service, resolves the target VM **server-side** from the user's
+active provisioning assignment (never from client-supplied parameters), and
+relays the Guacamole protocol between the browser WebSocket and guacd over TCP.
 
-## Prerequisites
+## Quick Start (with the root docker-compose.yml)
 
-- Docker and Docker Compose (recommended)
-- Python 3.11+ (for local development)
-- Guacamole daemon (guacd) - handled automatically by Docker Compose
-
-## Quick Start with Docker Compose
-
-The fastest way to start the service is with Docker Compose:
+From the repository root:
 
 ```bash
-docker compose up
+docker compose up -d --build
 ```
 
-This command will:
-1. Pull the Guacamole daemon image
-2. Build the FastAPI service
-3. Create a bridge network for inter-service communication
-4. Start both services with health checks
+The frontend is served at `http://localhost:8000`. Sign in with an
+auth-service account, press **Connect** to claim a VM from your pool, and the
+remote desktop appears in the browser.
 
-The service will be available at `http://localhost:8000`
+## Environment (.env — not tracked in git, injected via compose `env_file`)
 
-### Environment Configuration
+### Service endpoints (defaults match the compose service names)
+| Variable | Default | Purpose |
+|---|---|---|
+| `GUACD_HOST` / `GUACD_PORT` | `guacd` / `4822` | Guacamole daemon location |
+| `AUTH_SERVICE_URL` | `http://auth-service:8003` | Token validation (`/auth/me`) |
+| `PROVISIONING_SERVICE_URL` | `http://provisioning-server:8001` | Session resolution (`/provision/status`) |
+| `AUTH_PUBLIC_URL` / `PROVISION_PUBLIC_URL` | *(empty)* | Browser-reachable URLs; set when a reverse proxy routes `/auth` and `/provision` on this origin (TLS deployment). Served via `/api/config`; empty = frontend derives ports from `window.location`. |
 
-Create a `.env` file in the mirroring-service directory to configure the service:
+### RDP credentials (pool-level; per-VM credentials would come from `desktop_instances.connection_details` via provisioning)
+`VM_PORT` (3389), `VM_USERNAME`, `VM_PASSWORD`, `VM_PROTOCOL` (rdp),
+`VM_DOMAIN`, `VM_SECURITY`, plus the display defaults (`VM_WIDTH`,
+`VM_HEIGHT`, `VM_DPI`) and RDP feature flags (`VM_COLOR_DEPTH`, …).
 
-```env
-# Guacamole Daemon Configuration
-GUACD_HOST=guacd
-GUACD_PORT=4822
+### Hardening knobs
+| Variable | Default | Purpose |
+|---|---|---|
+| `GUACD_CONNECT_TIMEOUT` | `10` | TCP connect timeout to guacd (s) |
+| `GUACD_HANDSHAKE_TIMEOUT` | `20` | Whole guacd handshake timeout (s) |
+| `GUACD_READ_TIMEOUT` | `120` | Idle read timeout on the guacd stream (s) |
+| `MAX_INSTRUCTION_BYTES` | `33554432` | Per-instruction buffer cap (bytes) |
+| `MAX_CONCURRENT_SESSIONS` | `20` | Global concurrent WS sessions |
+| `MAX_SESSIONS_PER_IP` | `3` | Concurrent WS sessions per client IP |
+| `ALLOWED_ORIGINS` | *(empty = `*`)* | CORS allowlist (comma-separated) — set in production |
+| `WS_ALLOWED_ORIGINS` | *(empty = any)* | Enforced on the WebSocket handshake (comma-separated) — set in production |
 
-# Remote Desktop/VM Configuration
-VM_HOST=your_vm_host
-VM_PORT=3389
-VM_USERNAME=your_username
-VM_PASSWORD=your_password
-VM_PROTOCOL=rdp
-VM_DOMAIN=your_domain
-VM_SECURITY=any
+## Security model & behaviors
 
-# Display Settings
-VM_WIDTH=1280
-VM_HEIGHT=720
-VM_DPI=96
-```
+- **Auth:** every `/ws/guacd` connection requires `?token=<auth token>`,
+  validated against auth-service `/auth/me` (close 1008 on failure).
+- **Per-session target:** the VM IP comes from `GET /provision/status` for the
+  authenticated user — clients cannot point the tunnel at arbitrary hosts.
+- **Session expiry:** the WebSocket closes with 1012 at the assignment's
+  `expires_at`; the authoritative release is provisioning's
+  `expire_sessions` beat. The mirroring service does **not** release on
+  teardown, so transient drops don't destroy non-persistent VMs (and the
+  frontend auto-reconnect can resume the same VM).
+- **Client input whitelist:** only `mouse`/`key`/`size`/`clipboard`/`sync`/
+  `disconnect` instructions reach guacd; `nop` keepalives are stripped;
+  handshake instructions and malformed frames are dropped.
+- **Limits:** viewport params are clamped (640–7680 × 480–4320, dpi 48–288);
+  instruction buffers are capped; concurrent sessions and per-IP sessions are
+  capped (close 1013).
 
-**Note:** When using Docker Compose, `GUACD_HOST` should be set to `guacd` (the service name). For local development, use `127.0.0.1`.
+## Deployment notes
+
+- **Secrets:** `.env` is untracked and excluded from the Docker image
+  (`.dockerignore`); compose injects it via `env_file`. **Rotate any VM
+  credentials that were previously committed to git** — history retains them.
+- **TLS/WSS:** terminate TLS on a reverse proxy in front of this service (the
+  frontend auto-selects `wss://` when served over https). For same-origin
+  proxying of `/auth` and `/provision`, set `AUTH_PUBLIC_URL` /
+  `PROVISION_PUBLIC_URL` and `ALLOWED_ORIGINS` / `WS_ALLOWED_ORIGINS` to the
+  public origin.
+- **Healthcheck:** compose probes `/api/health` with a `python` one-liner
+  (the slim image has no `curl`).
+- **Known limitation:** freshly provisioned pool VMs need a few minutes for
+  the guest to boot and start xrdp; the first session may also drop once due
+  to the xrdp/LightDM startup race — the frontend auto-reconnect (2→32 s
+  backoff, 5 attempts) recovers from this.

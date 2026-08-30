@@ -40,6 +40,26 @@ GUACD_PORT = int(os.getenv("GUACD_PORT", "4822"))
 AUTH_SERVICE_URL         = os.getenv("AUTH_SERVICE_URL",         "http://auth-service:8003")
 PROVISIONING_SERVICE_URL = os.getenv("PROVISIONING_SERVICE_URL", "http://provisioning-server:8001")
 
+# Public (browser-reachable) URLs — empty means the frontend derives them
+# from window.location (used when a reverse proxy terminates TLS and routes
+# /auth and /provision on the same origin).
+AUTH_PUBLIC_URL      = os.getenv("AUTH_PUBLIC_URL", "").rstrip("/")
+PROVISION_PUBLIC_URL = os.getenv("PROVISION_PUBLIC_URL", "").rstrip("/")
+
+# Hardening knobs
+GUACD_CONNECT_TIMEOUT   = float(os.getenv("GUACD_CONNECT_TIMEOUT",   "10"))
+GUACD_HANDSHAKE_TIMEOUT = float(os.getenv("GUACD_HANDSHAKE_TIMEOUT", "20"))
+GUACD_READ_TIMEOUT      = float(os.getenv("GUACD_READ_TIMEOUT",      "120"))
+MAX_INSTRUCTION_BYTES   = int(os.getenv("MAX_INSTRUCTION_BYTES",     str(32 * 1024 * 1024)))
+MAX_CONCURRENT_SESSIONS = int(os.getenv("MAX_CONCURRENT_SESSIONS",   "20"))
+MAX_SESSIONS_PER_IP     = int(os.getenv("MAX_SESSIONS_PER_IP",       "3"))
+
+# Browser origin policy: comma-separated list; empty = allow any origin
+# (development). Set these in production. ALLOWED_ORIGINS drives CORS,
+# WS_ALLOWED_ORIGINS is enforced on the WebSocket handshake.
+ALLOWED_ORIGINS     = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+WS_ALLOWED_ORIGINS  = [o.strip() for o in os.getenv("WS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 # Target VM / RDP — VM_HOST is now per-session: it is resolved from the
 # user's active provisioning assignment at WebSocket connect time, never
 # from client-supplied parameters or module-level config.
@@ -71,6 +91,9 @@ logger.info("  guacd : %s:%s", GUACD_HOST, GUACD_PORT)
 logger.info("  auth  : %s", AUTH_SERVICE_URL)
 logger.info("  prov  : %s", PROVISIONING_SERVICE_URL)
 logger.info("  RDP   : port=%s protocol=%s user=%s", VM_PORT, VM_PROTOCOL, VM_USERNAME)
+logger.info("  caps  : %d concurrent, %d/IP  |  origins: %s",
+            MAX_CONCURRENT_SESSIONS, MAX_SESSIONS_PER_IP,
+            WS_ALLOWED_ORIGINS or "any")
 logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
@@ -79,8 +102,13 @@ logger.info("━━━━━━━━━━━━━━━━━━━━━━�
 # ─────────────────────────────────────────────────────────────────────────────
 
 def guac_encode(*args: str) -> bytes:
-    parts = ",".join(f"{len(str(a))}.{a}" for a in args)
-    return (parts + ";").encode("utf-8")
+    # Length prefixes are UTF-8 BYTE counts per the Guacamole protocol —
+    # using len(str) (characters) corrupts non-ASCII values.
+    parts = []
+    for a in args:
+        value = str(a)
+        parts.append(f"{len(value.encode('utf-8'))}.{value}")
+    return (",".join(parts) + ";").encode("utf-8")
 
 
 def guac_decode(raw: str) -> list[str]:
@@ -91,10 +119,14 @@ def guac_decode(raw: str) -> list[str]:
         try:
             dot    = part.index(".")
             length = int(part[:dot])
-            value  = part[dot + 1: dot + 1 + length]
+            if length < 0:
+                raise ValueError("negative element length")
+            value = part[dot + 1: dot + 1 + length]
+            if len(value) != length:
+                raise ValueError("truncated element value")
             elements.append(value)
-        except (ValueError, IndexError):
-            continue
+        except (ValueError, IndexError) as exc:
+            raise ValueError(f"malformed guacamole element: {part[:60]!r}") from exc
     return elements
 
 
@@ -112,20 +144,34 @@ class AsyncGuacamoleClient:
 
     async def _read_instruction(self) -> list[str]:
         while ";" not in self._buffer:
-            chunk = await self._reader.read(4096)
+            if len(self._buffer) > MAX_INSTRUCTION_BYTES:
+                raise ConnectionError(
+                    f"guacd instruction exceeded MAX_INSTRUCTION_BYTES "
+                    f"({MAX_INSTRUCTION_BYTES})"
+                )
+            try:
+                chunk = await asyncio.wait_for(
+                    self._reader.read(4096), timeout=GUACD_READ_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                raise ConnectionError("guacd read timeout")
             if not chunk:
                 raise ConnectionError("guacd closed the TCP connection unexpectedly")
             self._buffer += chunk.decode("utf-8", errors="ignore")
         raw, self._buffer = self._buffer.split(";", 1)
-        return guac_decode(raw)
+        try:
+            return guac_decode(raw)
+        except ValueError as exc:
+            raise ConnectionError(f"malformed guacamole instruction: {exc}") from exc
 
     async def _send(self, *args: str) -> None:
         self._writer.write(guac_encode(*args))
         await self._writer.drain()
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.open_connection(
-            self._host, self._port
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(self._host, self._port),
+            timeout=GUACD_CONNECT_TIMEOUT,
         )
         logger.debug("TCP connected → guacd %s:%s", self._host, self._port)
 
@@ -212,7 +258,16 @@ class AsyncGuacamoleClient:
     async def receive_instruction(self) -> str | None:
         try:
             while ";" not in self._buffer:
-                chunk = await self._reader.read(4096)
+                if len(self._buffer) > MAX_INSTRUCTION_BYTES:
+                    logger.warning("guacd→browser: instruction too large, dropping session")
+                    return None
+                try:
+                    chunk = await asyncio.wait_for(
+                        self._reader.read(4096), timeout=GUACD_READ_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.info("guacd→browser: read timeout — treating stream as closed")
+                    return None
                 if not chunk:
                     return None
                 self._buffer += chunk.decode("utf-8", errors="ignore")
@@ -357,6 +412,67 @@ async def _fetch_active_session(token: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Hardening helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Process-local session accounting (adequate for a single replica; a
+# multi-replica deployment needs a shared store).
+_sessions: dict[str, int] = {}
+_sessions_lock = asyncio.Lock()
+
+
+async def _acquire_session_slot(client_host: str) -> bool:
+    async with _sessions_lock:
+        if sum(_sessions.values()) >= MAX_CONCURRENT_SESSIONS:
+            return False
+        if _sessions.get(client_host, 0) >= MAX_SESSIONS_PER_IP:
+            return False
+        _sessions[client_host] = _sessions.get(client_host, 0) + 1
+        return True
+
+
+async def _release_session_slot(client_host: str) -> None:
+    async with _sessions_lock:
+        count = _sessions.get(client_host, 0) - 1
+        if count <= 0:
+            _sessions.pop(client_host, None)
+        else:
+            _sessions[client_host] = count
+
+
+def _clamp(value, lo: int, hi: int, default: int) -> int:
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+# Instructions a browser is allowed to send into guacd. Everything else
+# (select/connect/args/size-bombs, tunnel internals, malformed frames)
+# is dropped. `nop` is allowed here but filtered out before forwarding —
+# guacd must never receive keepalives (see browser_to_guacd).
+ALLOWED_CLIENT_OPCODES = {
+    "mouse", "key", "size", "clipboard", "sync", "disconnect", "nop",
+}
+
+
+def _client_frame_allowed(data: str) -> bool:
+    """True when every instruction in the frame uses an allowed opcode."""
+    for instr in data.split(";"):
+        instr = instr.strip()
+        if not instr:
+            continue
+        try:
+            elements = guac_decode(instr)
+        except ValueError:
+            return False
+        if not elements or elements[0] not in ALLOWED_CLIENT_OPCODES:
+            return False
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  FastAPI Application
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -364,7 +480,8 @@ app = FastAPI(title="VDI Mirror", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Empty list default → "*" for development; set ALLOWED_ORIGINS in prod.
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -384,6 +501,18 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/api/config")
+async def config_endpoint():
+    """Browser-reachable service URLs. Nulls mean the frontend derives
+    them from window.location (plain port-based deployment); set
+    AUTH_PUBLIC_URL / PROVISION_PUBLIC_URL when a reverse proxy routes
+    /auth and /provision on this same origin (TLS deployment)."""
+    return {
+        "auth":      AUTH_PUBLIC_URL or None,
+        "provision": PROVISION_PUBLIC_URL or None,
+    }
 
 
 @app.get("/api/health")
@@ -452,15 +581,12 @@ async def guacd_tunnel(websocket: WebSocket):
     after the socket has already been closed by browser_to_guacd's exit.
     """
 
-    # ── Step 1: Parse query params ──────────────────────────────────────
+    # ── Step 1: Parse query params (clamped) ─────────────────────────────
     params = dict(websocket.query_params)
     token = params.get("token", "")
-    try:
-        width  = int(params.get("width",  VM_WIDTH))
-        height = int(params.get("height", VM_HEIGHT))
-        dpi    = int(params.get("dpi",    VM_DPI))
-    except (ValueError, TypeError):
-        width, height, dpi = VM_WIDTH, VM_HEIGHT, VM_DPI
+    width  = _clamp(params.get("width",  VM_WIDTH),  640, 7680, VM_WIDTH)
+    height = _clamp(params.get("height", VM_HEIGHT), 480, 4320, VM_HEIGHT)
+    dpi    = _clamp(params.get("dpi",    VM_DPI),     48,  288, VM_DPI)
 
     # ── Step 2: Accept WebSocket ──────────────────────────────────────────
     await websocket.accept(subprotocol="guacamole")
@@ -469,7 +595,16 @@ async def guacd_tunnel(websocket: WebSocket):
         width, height, dpi, websocket.client,
     )
 
-    # ── Step 3: Authenticate the caller ───────────────────────────────────
+    # ── Step 3: Origin policy (only enforced when WS_ALLOWED_ORIGINS set) ─
+    if WS_ALLOWED_ORIGINS:
+        origin = websocket.headers.get("origin", "")
+        if origin not in WS_ALLOWED_ORIGINS:
+            logger.warning("WS rejected: origin %r not allowed (client=%s)",
+                           origin, websocket.client)
+            await websocket.close(code=1008, reason="origin not allowed")
+            return
+
+    # ── Step 4: Authenticate the caller ───────────────────────────────────
     if not token:
         logger.warning("WS rejected: missing token (client=%s)", websocket.client)
         await websocket.close(code=1008, reason="missing token")
@@ -528,20 +663,31 @@ async def guacd_tunnel(websocket: WebSocket):
         await websocket.close(code=1011, reason=reason)
         return
 
-    # ── Step 6: Guacamole handshake (per-session VM target) ───────────────
+    # ── Step 6: Session slot (concurrency caps) ───────────────────────────
+    client_host = websocket.client.host if websocket.client else "unknown"
+    if not await _acquire_session_slot(client_host):
+        logger.warning("WS rejected: session cap reached (client=%s)", client_host)
+        await websocket.close(code=1013, reason="too many active sessions")
+        return
+
+    # ── Step 7: Guacamole handshake (per-session VM target) ───────────────
     guac_client: AsyncGuacamoleClient | None = None
     try:
-        guac_client = await _make_guac_client(vm_host, width, height, dpi)
+        guac_client = await asyncio.wait_for(
+            _make_guac_client(vm_host, width, height, dpi),
+            timeout=GUACD_HANDSHAKE_TIMEOUT,
+        )
         logger.info(
             "guacd handshake OK ✅  vm=%s:%s  viewport=%dx%d",
             vm_host, VM_PORT, width, height,
         )
     except Exception as exc:
         logger.error("guacd handshake failed: %s", exc)
+        await _release_session_slot(client_host)
         await websocket.close(code=1011, reason="guacd handshake failed")
         return
 
-    # ── Step 7: Bidirectional async relay + session-expiry watchdog ───────
+    # ── Step 8: Bidirectional async relay + session-expiry watchdog ───────
 
     # FIX: Shared shutdown event — set by whichever side closes first.
     # Both tasks check this before attempting any further sends/receives.
@@ -595,9 +741,14 @@ async def guacd_tunnel(websocket: WebSocket):
                 if stripped == "3.nop;":
                     continue
 
-                # Filter 2: Internal tunnel opcode — RawTunnel never sends
-                # these but guard anyway
-                if stripped.startswith("0.,") or stripped == "0.;":
+                # Filter 2: Opcode whitelist — only mouse/key/size/clipboard/
+                # sync/disconnect frames reach guacd. This blocks handshake
+                # hijacking (select/connect), size bombs and malformed frames.
+                if not _client_frame_allowed(stripped):
+                    logger.warning(
+                        "browser→guacd: dropped disallowed frame: %.80s",
+                        stripped,
+                    )
                     continue
 
                 await guac_client.send_text(data)
@@ -671,8 +822,8 @@ async def guacd_tunnel(websocket: WebSocket):
         )
 
     finally:
-        # Cancel the still-running task
-        for task in [task_b2g, task_g2b]:
+        # Cancel the still-running tasks (relays + expiry watchdog)
+        for task in [task_b2g, task_g2b, task_exp]:
             if not task.done():
                 task.cancel()
                 try:
@@ -685,3 +836,6 @@ async def guacd_tunnel(websocket: WebSocket):
             await guac_client.disconnect()
             await guac_client.close()
             logger.info("guacd connection closed cleanly")
+
+        # Release the session slot
+        await _release_session_slot(client_host)
