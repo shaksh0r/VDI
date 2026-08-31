@@ -7,6 +7,7 @@ from typing import Optional
 
 import bcrypt
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 
 from database_connection import create_database_pool, get_db
@@ -61,6 +62,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Auth Service", version="1.0.0", lifespan=lifespan)
 
+# Browser frontends (served by the mirroring service) call /auth/* directly
+# with Bearer tokens. No credentials/cookies are used, so a wildcard origin
+# is safe; set ALLOWED_ORIGINS (comma-separated) in production.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 def _now() -> datetime:
@@ -99,6 +113,12 @@ def _make_token(ttl_minutes: int) -> tuple[str, str, datetime]:
 
 @app.get("/")
 def healthcheck():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+def health():
+    """Container healthcheck target (compose probes this path)."""
     return {"status": "ok"}
 
 

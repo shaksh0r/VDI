@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
 from .api import admin, pools, vms
@@ -63,6 +65,19 @@ app = FastAPI(
     title="VDI Provisioning Service",
     version="2.0.0",
     lifespan=lifespan,
+)
+
+# Browser frontends (served by the mirroring service) call /provision/*
+# directly with Bearer tokens. No credentials/cookies are used, so a
+# wildcard origin is safe; set ALLOWED_ORIGINS (comma-separated) in prod.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(pools.router)
