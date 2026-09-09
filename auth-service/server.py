@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field
 
 from database_connection import create_database_pool, get_db
 
@@ -52,6 +53,41 @@ class LoginResponse(BaseModel):
     user_id: str
 
 
+class AdminUserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=4, max_length=255)
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=255)
+    full_name: str = Field(..., min_length=1, max_length=255)
+    role: str = Field(
+        "faculty",
+        pattern="^(faculty|student)$",
+        description="Accounts created by an admin: 'faculty' (teacher) or 'student'.",
+    )
+    student_id: Optional[str] = Field(
+        None, max_length=50,
+        description="University ID (student accounts)",
+    )
+    department: Optional[str] = Field(
+        None, max_length=100,
+        description="Department (student accounts)",
+    )
+
+
+class AdminUserResponse(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    full_name: Optional[str] = None
+    role: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+
+
+class AdminUserListResponse(BaseModel):
+    users: list[AdminUserResponse]
+    total: int
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.db_pool = await create_database_pool()
@@ -60,6 +96,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Auth Service", version="1.0.0", lifespan=lifespan)
+
+# Browser frontends (served by the mirroring service) call /auth/* directly
+# with Bearer tokens. No credentials/cookies are used, so a wildcard origin
+# is safe; set ALLOWED_ORIGINS (comma-separated) in production.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
@@ -96,9 +145,52 @@ def _make_token(ttl_minutes: int) -> tuple[str, str, datetime]:
     return token, token_hash, expires_at
 
 
+async def _session_user(db, authorization, x_auth_token) -> dict:
+    """Resolve a bearer token to its active user row (role included)."""
+    token      = _extract_bearer_token(authorization, x_auth_token)
+    token_hash = _hash_token(token)
+
+    row = await db.fetchrow(
+        """
+        SELECT u.user_id, u.username, u.role, s.expires_at, s.revoked_at
+        FROM user_sessions s
+        JOIN users u ON u.user_id = s.user_id
+        WHERE s.token_hash = $1
+          AND u.is_active  = TRUE
+          AND u.deleted_at IS NULL
+        """,
+        token_hash,
+    )
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if row["revoked_at"] is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+    if row["expires_at"] <= _now():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    return row
+
+
+async def _require_admin(db, authorization, x_auth_token) -> dict:
+    """Like _session_user but only for admins (403 otherwise)."""
+    row = await _session_user(db, authorization, x_auth_token)
+    if str(row["role"]) != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return row
+
+
 
 @app.get("/")
 def healthcheck():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+def health():
+    """Container healthcheck target (compose probes this path)."""
     return {"status": "ok"}
 
 
@@ -255,3 +347,192 @@ async def logout(
         )
 
     return {"status": "logged_out"}
+
+
+# ── Admin-only account management ─────────────────────────────────────────────
+# Teacher (faculty) accounts are created ONLY by an authenticated admin from
+# the admin dashboard — never by public self-registration (the /auth/signup
+# endpoint stays hard-coded to role 'student').
+
+
+@app.post(
+    "/auth/admin/users",
+    response_model=AdminUserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def admin_create_user(
+    payload: AdminUserCreateRequest,
+    db=Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+    x_auth_token: Optional[str] = Header(default=None),
+):
+    await _require_admin(db, authorization, x_auth_token)
+
+    existing = await db.fetchrow(
+        "SELECT user_id FROM users WHERE username = $1 AND deleted_at IS NULL",
+        payload.username,
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already taken")
+
+    existing = await db.fetchrow(
+        "SELECT user_id FROM users WHERE email = $1 AND deleted_at IS NULL",
+        payload.email,
+    )
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    password_hash = _hash_password(payload.password)
+
+    user = await db.fetchrow(
+        """
+        INSERT INTO users (
+            username, email, password_hash, full_name,
+            student_id, department,
+            role, is_active, email_verified
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::user_role, TRUE, TRUE)
+        RETURNING user_id, username, email, full_name, role, is_active, created_at
+        """,
+        payload.username,
+        payload.email,
+        password_hash,
+        payload.full_name,
+        payload.student_id,
+        payload.department,
+        payload.role,
+    )
+
+    return AdminUserResponse(
+        user_id=str(user["user_id"]),
+        username=user["username"],
+        email=user["email"],
+        full_name=user["full_name"],
+        role=str(user["role"]),
+        is_active=user["is_active"],
+        created_at=user["created_at"],
+    )
+
+
+@app.get("/auth/admin/users", response_model=AdminUserListResponse)
+async def admin_list_users(
+    role: Optional[str] = Query(default=None, pattern="^(student|faculty|admin|guest)$"),
+    db=Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+    x_auth_token: Optional[str] = Header(default=None),
+):
+    await _require_admin(db, authorization, x_auth_token)
+
+    query = """
+        SELECT user_id, username, email, full_name, role, is_active, created_at
+        FROM users
+        WHERE deleted_at IS NULL
+    """
+    params: list = []
+    if role:
+        params.append(role)
+        query += f" AND role = ${len(params)}::user_role"
+    query += " ORDER BY role ASC, created_at DESC"
+    rows = await db.fetch(query, *params)
+
+    return AdminUserListResponse(
+        users=[
+            AdminUserResponse(
+                user_id=str(row["user_id"]),
+                username=row["username"],
+                email=row["email"],
+                full_name=row["full_name"],
+                role=str(row["role"]),
+                is_active=row["is_active"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ],
+        total=len(rows),
+    )
+
+
+@app.delete("/auth/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: str,
+    db=Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+    x_auth_token: Optional[str] = Header(default=None),
+):
+    """Hard-delete a student/teacher account with cascading cleanup.
+
+    DB-level cascades remove the user's sessions, assignments and
+    notifications. Any VM they held is freed by the provisioning
+    reconciler within one beat (~30 s): non-persistent VMs are destroyed
+    and refilled, persistent (class) VMs return to their pool.
+
+    Guard: admins cannot be deleted, and a user who owns active pools
+    (teachers with class pools) must have those pools deleted first —
+    pool rows reference their creator and their VMs must be destroyed
+    through the provisioning job machinery, not by SQL.
+    """
+    await _require_admin(db, authorization, x_auth_token)
+
+    target = await db.fetchrow(
+        """
+        SELECT user_id, username, role, is_active, deleted_at
+        FROM users WHERE user_id = $1
+        """,
+        user_id,
+    )
+    if target is None or target["deleted_at"] is not None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    if str(target["role"]) == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="admin accounts cannot be deleted",
+        )
+
+    active_pools = await db.fetchval(
+        """
+        SELECT COUNT(*) FROM desktop_pools
+        WHERE created_by = $1 AND deleted_at IS NULL
+        """,
+        user_id,
+    )
+    if active_pools:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{target['username']} owns {active_pools} active pool(s). "
+                "Delete those pools first (this destroys their VMs and "
+                "ends the students' sessions) before deleting the account."
+            ),
+        )
+
+    has_active_session = await db.fetchval(
+        """
+        SELECT COUNT(*) FROM user_assignments
+        WHERE user_id = $1 AND released_at IS NULL
+        """,
+        user_id,
+    )
+
+    deleted = await db.fetchrow(
+        """
+        DELETE FROM users WHERE user_id = $1 RETURNING username, role
+        """,
+        user_id,
+    )
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    note = None
+    if has_active_session:
+        note = (
+            f"{deleted['username']} held an active VM session — the VM is "
+            "being returned to its pool (30 s max)."
+        )
+    return {
+        "ok": True,
+        "deleted_user": deleted["username"],
+        "role": str(deleted["role"]),
+        "cascaded": {"sessions": True, "assignments": True},
+        "note": note,
+    }

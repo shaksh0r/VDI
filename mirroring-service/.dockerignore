@@ -4,6 +4,9 @@
 # git
 .gitignore
 
+# secrets — injected via compose env_file at runtime, never baked into image
+.env
+
 venv
 
 docker-compose.yml

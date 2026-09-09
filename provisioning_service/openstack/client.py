@@ -1,42 +1,79 @@
-
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 import httpx
 
+from . import keystone
+from .errors import OpenStackError
+
 logger = logging.getLogger(__name__)
-
-
-class OpenStackError(Exception):
-
-    def __init__(self, status_code: int, message: str, body: Any = None):
-        self.status_code = status_code
-        self.message = message
-        self.body = body
-        super().__init__(message)
 
 
 class OpenStackClient:
 
     def __init__(
         self,
-        auth_token: str,
-        compute_url: str,
-        network_url: str,
+        auth_url: str,
+        username: str,
+        password: str,
+        project_name: str,
+        user_domain: str = "Default",
+        project_domain: str = "Default",
+        compute_url: str = "",
+        network_url: str = "",
         image_url: str = "",
         volume_url: str = "",
         timeout: float = 30.0,
+        token_safety_margin: float = 300.0,
     ):
-        self.auth_token = auth_token
+        self.auth_url = auth_url
+        self.username = username
+        self.password = password
+        self.project_name = project_name
+        self.user_domain = user_domain
+        self.project_domain = project_domain
         self.compute_url = compute_url.rstrip("/")
         self.network_url = network_url.rstrip("/")
         self.image_url = image_url.rstrip("/") if image_url else ""
         self.volume_url = volume_url.rstrip("/") if volume_url else ""
         self.timeout = timeout
+        self.token_safety_margin = token_safety_margin
+        self._token: Optional[str] = None
+        self._token_expires_at: Optional[float] = None
+        self._token_lock = asyncio.Lock()
         self._client: Optional[httpx.AsyncClient] = None
+
+    def _token_is_fresh(self) -> bool:
+        return (
+            self._token is not None
+            and self._token_expires_at is not None
+            and time.time() + self.token_safety_margin < self._token_expires_at
+        )
+
+    async def _get_token(self) -> str:
+        if self._token_is_fresh():
+            return self._token
+
+        async with self._token_lock:
+            if self._token_is_fresh():
+                return self._token
+
+            token, expires_at = await keystone.authenticate(
+                self.auth_url,
+                self.username,
+                self.password,
+                self.project_name,
+                self.user_domain,
+                self.project_domain,
+                timeout=self.timeout,
+            )
+            self._token = token
+            self._token_expires_at = expires_at
+            return token
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -59,7 +96,7 @@ class OpenStackClient:
     ) -> httpx.Response:
         client = await self._get_client()
 
-        _headers = {"X-Auth-Token": self.auth_token}
+        _headers = {"X-Auth-Token": await self._get_token()}
         if headers:
             _headers.update(headers)
         if json is not None:
@@ -74,10 +111,15 @@ class OpenStackClient:
                 )
                 last_response = response
 
+                if response.status_code == 401 and attempt == 0:
+                    self._token = None
+                    self._token_expires_at = None
+                    _headers["X-Auth-Token"] = await self._get_token()
+                    continue
+
                 if response.status_code < 500:
                     return response
 
-                # 5xx — retry with backoff
                 logger.warning(
                     "OpenStack %s %s → %s (attempt %d/%d), retrying…",
                     method, url, response.status_code, attempt + 1, max_retries,
@@ -104,7 +146,6 @@ class OpenStackClient:
             body = last_response.text if last_response else None
 
         raise OpenStackError(status, f"OpenStack API call failed after {max_retries} attempts", body)
-
 
     async def compute_request(
         self, method: str, path: str, **kwargs

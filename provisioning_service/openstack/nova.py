@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import httpx
+
 from .client import OpenStackClient
 
 
@@ -26,12 +28,17 @@ async def create_server(
     return resp.json()
 
 
-async def delete_server(client: OpenStackClient, server_id: str) -> None:
-    await client.compute_request("DELETE", f"/servers/{server_id}")
+async def delete_server(client: OpenStackClient, server_id: str) -> httpx.Response:
+    return await client.compute_request("DELETE", f"/servers/{server_id}")
 
 
 async def list_flavors(client: OpenStackClient) -> dict[str, Any]:
     resp = await client.compute_request("GET", "/flavors")
+    return resp.json()
+
+
+async def list_flavors_detail(client: OpenStackClient) -> dict[str, Any]:
+    resp = await client.compute_request("GET", "/flavors/detail")
     return resp.json()
 
 

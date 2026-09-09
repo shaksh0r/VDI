@@ -8,14 +8,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-COPY vpn-routes.sh /vpn-routes.sh
-RUN chmod +x /vpn-routes.sh
-
-ENV PYTHONPATH=/app
-
-# Entrypoint runs routes first, then hands off to CMD
-ENTRYPOINT ["/bin/sh", "-c", "/vpn-routes.sh && exec \"$@\"", "--"]
-
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

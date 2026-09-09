@@ -1,0 +1,5 @@
+# Secrets — injected via compose env_file at runtime, never baked into image
+**/.env
+
+# Python caches
+**/__pycache__

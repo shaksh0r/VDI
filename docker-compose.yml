@@ -2,6 +2,7 @@ services:
   database:
     build:
       context: ./database
+      network: host
     container_name: database
     networks:
       - app_net
@@ -11,7 +12,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U myuser -d mydatabase"]
+      test: ["CMD-SHELL", "pg_isready -U shakshor -d VDI"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,6 +66,7 @@ services:
       dockerfile: Dockerfile
       network: host
     container_name: mirroring
+    env_file: ./mirroring-service/.env
     networks:
       - app_net
     ports:
@@ -86,35 +88,17 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # python:3.11-slim has no curl; probe the real health path
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)\""]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
-  mirroring-frontend:
-    build:
-      context: "./mirroring-service/mirroring-service"
-      dockerfile: Dockerfile.frontend
-      network: host
-    container_name: mirroring-frontend
-    networks:
-      - app_net
-    environment:
-      VITE_MIRRORING_HOST: mirroring
-      VITE_AUTH_HOST: auth-service
-      VITE_PROVISION_HOST: provisioning-server
-    cap_add:
-      - NET_ADMIN
-    dns:
-      - 172.17.0.251
-      - 172.17.0.252
-      - 8.8.8.8
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "5173:5173"
-    restart: unless-stopped
+  # mirroring-frontend: removed — the Vite app it referenced
+  # (mirroring-service/mirroring-service/) was deleted in commit
+  # "new_mirroring"; the static UI served by the mirroring service
+  # replaces it. Re-add here when the SPA is built.
 
   auth-service:
     build:
@@ -124,6 +108,12 @@ services:
     container_name: auth-service
     networks:
       - app_net
+    environment:
+      DB_USER: shakshor
+      DB_PASSWORD: shakshor
+      DB_NAME: VDI
+      DB_HOST: database
+      DB_PORT: "5432"
     ports:
       - "8003:8003"
     dns:
@@ -139,7 +129,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=3)\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -149,9 +139,11 @@ services:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-server
+    env_file: ./provisioning_service/.env
     command: >
-      uvicorn provisioning_service.server:app
+      uvicorn provisioning_service.main:app
       --host 0.0.0.0
       --port 8001
     networks:
@@ -174,12 +166,20 @@ services:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   provisioning-worker:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-worker
+    env_file: ./provisioning_service/.env
     command: >
       celery -A provisioning_service.message_queue.celery_app worker
       --loglevel=info
@@ -206,7 +206,9 @@ services:
     build:
       context: .
       dockerfile: provisioning_service/Dockerfile
+      network: host
     container_name: provisioning-beat
+    env_file: ./provisioning_service/.env
     command: >
       celery -A provisioning_service.message_queue.celery_beat beat
       --loglevel=info

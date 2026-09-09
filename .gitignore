@@ -1,11 +1,23 @@
+# --- Python caches & venvs ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# --- Node (mirroring frontend) ---
+node_modules/
+
+# --- Secrets & local config ---
+.env
 auth-service/.env
-auth-service/.venv
-.venv
-vm-connect.txt
-auth-service/__pycache__
-seed_auth_tests.sql
-models/__pycache__
-provisioning_service/__pycache__
-provisioning_service/models/__pycache__
-provisioning_service/openstack/__pycache__
 provisioning_service/config.py
+
+# --- Misc ---
+vm-connect.txt
+seed_auth_tests.sql
+.reasonix
+celerybeat-schedule
+.dhome

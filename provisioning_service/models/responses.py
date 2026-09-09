@@ -9,6 +9,7 @@ class PoolResponse(BaseModel):
     pool_id: str
     name: str
     desktop_type: str
+    access_mode: str
     image_id: str
     flavor_id: str
     network_id: str
@@ -27,6 +28,84 @@ class PoolResponse(BaseModel):
 class PoolListResponse(BaseModel):
     pools: list[PoolResponse]
     total: int
+
+
+class TeacherTemplateResponse(BaseModel):
+    """The fixed, read-only compute spec shown to teachers when they
+    create a class pool. Values are decided server-side."""
+
+    desktop_type: str
+    access_mode: str
+    image_id: str
+    flavor_id: str
+    network_id: str
+    security_group: str
+    vcpus: Optional[int] = None
+    ram_mb: Optional[int] = None
+    disk_gb: Optional[int] = None
+    max_session_minutes: int
+    fixed: bool = True
+    note: str = "VM specification is fixed by the platform administrator"
+
+
+class TeacherPoolSummary(BaseModel):
+    pool_id: str
+    name: str
+    status: str
+    desktop_type: str
+    access_mode: str
+    min_vms: int
+    max_vms: int
+    current_count: int
+    max_session_minutes: int
+    created_at: datetime
+    ready_count: int = 0
+    in_use_count: int = 0
+    provisioning_count: int = 0
+    total_instances: int = 0
+
+
+class TeacherPoolListResponse(BaseModel):
+    pools: list[TeacherPoolSummary]
+    total: int
+
+
+class TeacherCodeEntry(BaseModel):
+    code: str
+    redeemed_by: Optional[str] = None   # username of the redeeming student
+    redeemed_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    affinity_vm: Optional[str] = None   # short id of the VM reserved for this code
+    vm_status: Optional[str] = None     # live status of that VM
+    created_at: Optional[datetime] = None
+
+
+class TeacherCodeListResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    capacity: int                    # max_vms — one code per VM seat
+    active_codes: int                # un-revoked codes issued so far
+    redeemed_codes: int              # of the active ones, claimed by students
+    codes: list[TeacherCodeEntry]
+
+
+class TeacherCodeGenerateResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    capacity: int
+    generated: int                   # codes created by this call
+    active_codes: int                # un-revoked total after this call
+    codes: list[str]                 # only the newly generated ones
+
+
+class TeacherExpandResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    max_vms: int                     # raised capacity after the expansion
+    added_vms: int                   # VMs requested by this call
+    dispatched_jobs: int             # create_vm jobs sent to the worker
+    generated_codes: int             # new access codes issued to match
+    active_codes: int                # un-revoked codes after the expansion
 
 
 class VMClaimResponse(BaseModel):

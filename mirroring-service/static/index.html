@@ -36,11 +36,14 @@
       <!-- Center: session identity -->
       <div class="chrome__session">
         <div class="chrome__session-dot" id="session-dot"></div>
-        <span class="chrome__session-text" id="session">No active session</span>
+        <span class="chrome__session-text" id="session">Not signed in</span>
       </div>
 
       <!-- Right: status -->
       <div class="chrome__right">
+        <button class="btn btn--logout" id="logout" aria-label="Sign out" hidden>
+          Sign out
+        </button>
         <div class="status-chip" id="status" data-ok="false">
           <span class="status-chip__ring"></span>
           <span class="status-chip__label">Disconnected</span>
@@ -66,7 +69,7 @@
 
         <div class="btn-divider"></div>
 
-        <button class="btn btn--disconnect" id="disconnect" aria-label="Disconnect session">
+        <button class="btn btn--disconnect" id="disconnect" aria-label="Disconnect session" disabled>
           <svg class="btn__icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
@@ -89,7 +92,171 @@
     ════════════════════════════════════════════════════ -->
     <main class="viewport" id="viewport">
 
-      <!-- Idle state — shown before first connection -->
+      <!-- Auth state — shown when not signed in (visibility via setView) -->
+      <div class="login-state" id="login">
+        <div class="login-state__card">
+          <p class="login-state__heading">Sign in to VDI</p>
+          <form class="login-state__form" id="login-form">
+            <input id="login-username" type="text" placeholder="Username"
+                   autocomplete="username" autocapitalize="none" required />
+            <input id="login-password" type="password" placeholder="Password"
+                   autocomplete="current-password" required />
+            <button type="submit" class="btn btn--connect">Sign in</button>
+          </form>
+          <p class="login-state__error" id="login-error"></p>
+          <p class="auth-switch">
+            Don't have an account?
+            <button type="button" class="auth-switch__btn" id="show-signup">Create one</button>
+          </p>
+        </div>
+      </div>
+
+      <!-- Signup state — student self-registration (toggled from login) -->
+      <div class="login-state" id="signup" style="display: none;">
+        <div class="login-state__card login-state__card--wide">
+          <p class="login-state__heading">Create your account</p>
+          <form class="login-state__form" id="signup-form">
+            <input id="reg-name" type="text" placeholder="Full name"
+                   autocomplete="name" required />
+            <input id="reg-email" type="email" placeholder="Email"
+                   autocomplete="email" autocapitalize="none" required />
+            <div class="form-row">
+              <input id="reg-sid" type="text" placeholder="Student ID" required />
+              <input id="reg-dept" type="text" placeholder="Department" required />
+            </div>
+            <input id="reg-username" type="text" placeholder="Username"
+                   autocomplete="username" autocapitalize="none" required />
+            <input id="reg-password" type="password" placeholder="Password (min 8 chars)"
+                   autocomplete="new-password" required />
+            <input id="reg-password2" type="password" placeholder="Confirm password"
+                   autocomplete="new-password" required />
+            <button type="submit" class="btn btn--connect">Create account</button>
+          </form>
+          <p class="login-state__error" id="signup-error"></p>
+          <p class="auth-switch">
+            Already have an account?
+            <button type="button" class="auth-switch__btn" id="show-login">Sign in</button>
+          </p>
+        </div>
+      </div>
+
+      <!-- Admin state — full admin console (role 'admin' only) -->
+      <div class="manage-state" id="admin-pane" style="display: none;">
+        <div class="console">
+          <div class="tabs">
+            <button type="button" class="tab tab--on" id="tab-users">Users</button>
+            <button type="button" class="tab" id="tab-pools">Pools &amp; VMs</button>
+          </div>
+
+          <!-- ── Tab: Users ─────────────────────────────────────────────── -->
+          <div class="console-tab" id="console-users">
+            <div class="manage-card">
+              <p class="manage-card__title">Create account</p>
+              <form class="login-state__form" id="admin-user-form">
+                <div class="form-row">
+                  <select id="au-role" aria-label="Role">
+                    <option value="student">Student</option>
+                    <option value="faculty">Teacher</option>
+                  </select>
+                  <input id="au-fullname" type="text" placeholder="Full name"
+                         autocomplete="off" required />
+                </div>
+                <div class="form-row">
+                  <input id="au-username" type="text" placeholder="Username (min 4)"
+                         autocomplete="off" autocapitalize="none" required />
+                  <input id="au-email" type="email" placeholder="Email"
+                         autocomplete="off" autocapitalize="none" required />
+                </div>
+                <div class="form-row" id="au-student-row">
+                  <input id="au-sid" type="text" placeholder="Student ID (optional)"
+                         autocomplete="off" />
+                  <input id="au-dept" type="text" placeholder="Department (optional)"
+                         autocomplete="off" />
+                </div>
+                <input id="au-password" type="password" placeholder="Temporary password (min 8)"
+                       autocomplete="new-password" required />
+                <p class="form-hint">Only an administrator can create accounts.
+                  Students may also self-register; teacher accounts exist only here.</p>
+                <button type="submit" class="btn btn--connect">Create account</button>
+              </form>
+              <p class="manage-msg" id="admin-msg"></p>
+            </div>
+
+            <div class="manage-card">
+              <div class="manage-card__head">
+                <p class="manage-card__title">Accounts</p>
+                <button type="button" class="btn btn--ghost" id="admin-refresh">Refresh</button>
+              </div>
+              <div class="staff-list" id="admin-user-list"></div>
+            </div>
+          </div>
+
+          <!-- ── Tab: Pools & VMs ───────────────────────────────────────── -->
+          <div class="console-tab" id="console-pools" style="display: none;">
+            <div class="manage-card">
+              <div class="manage-card__head">
+                <p class="manage-card__title">Pools &amp; VMs</p>
+                <button type="button" class="btn btn--ghost" id="pools-refresh">Refresh</button>
+              </div>
+              <p class="manage-msg" id="admin-pool-msg"></p>
+              <div class="staff-list" id="admin-pool-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Teacher state — class pool management (role 'faculty' only) -->
+      <div class="manage-state" id="teacher-pane" style="display: none;">
+        <div class="manage-state__wrap manage-state__wrap--split">
+          <div class="manage-card">
+            <p class="manage-card__title">New class pool</p>
+            <form class="login-state__form" id="pool-create-form">
+              <input id="tp-name" type="text" placeholder="Class pool name (e.g. cse450-lab1)"
+                     autocomplete="off" required />
+              <input id="tp-count" type="number" min="1" max="40" step="1"
+                     placeholder="Number of VMs" required />
+              <div class="spec-card">
+                <p class="spec-card__title">Fixed VM specification</p>
+                <div class="spec-row">
+                  <span class="spec-row__key">vCPUs</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-vcpus">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">RAM</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-ram">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Boot disk</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-disk">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Lifecycle</span>
+                  <span class="spec-row__val">Reserved — VM survives disconnects until you tear the class down</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Session limit</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-session">…</span>
+                </div>
+                <p class="spec-card__note">Configuration is fixed and cannot be changed.</p>
+              </div>
+              <button type="submit" class="btn btn--connect">Create pool &amp; provision VMs</button>
+            </form>
+            <p class="manage-msg" id="pool-create-msg"></p>
+          </div>
+
+          <div class="manage-card">
+            <div class="manage-card__head">
+              <p class="manage-card__title">My class pools</p>
+              <button type="button" class="btn btn--ghost" id="pool-refresh">Refresh</button>
+            </div>
+            <p class="form-hint">Manage a pool to generate its access codes — one code per VM.
+              Download codes.json and give each student their own code.</p>
+            <div class="staff-list" id="teacher-pool-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Idle state — logged in, no active session -->
       <div class="idle-state" id="placeholder">
         <div class="idle-state__glyph">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
@@ -100,8 +267,15 @@
         </div>
         <p class="idle-state__heading">No Session Active</p>
         <p class="idle-state__body">
-          Press <kbd>Connect</kbd> to initiate the remote desktop stream
+          Press <kbd>Connect</kbd> to request a VM and start the remote desktop stream
         </p>
+        <div class="code-entry">
+          <input id="class-code" type="text" placeholder="Class code — only if joining your teacher's pool"
+                 maxlength="16" spellcheck="false" autocomplete="off"
+                 autocapitalize="characters" autofocus="false" />
+          <p class="code-entry__hint">With a code your VM is reserved for you: after a
+            disconnect, enter the code again to resume the same VM.</p>
+        </div>
       </div>
 
       <!-- Guacamole mounts its display element here -->
@@ -123,11 +297,16 @@
           <span class="infobar__key">Protocol</span>
           <span class="infobar__val" id="sb-protocol">RDP</span>
         </span>
+        <span class="infobar__divider"></span>
+        <span class="infobar__item">
+          <span class="infobar__key">Session</span>
+          <span class="infobar__val" id="sb-session"></span>
+        </span>
       </div>
       <div class="infobar__right">
         <span class="infobar__item">
           <span class="infobar__key">VDI Mirror</span>
-          <span class="infobar__val">1.0.0</span>
+          <span class="infobar__val">1.1.0</span>
         </span>
       </div>
     </footer>

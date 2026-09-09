@@ -33,6 +33,11 @@ class PoolCreateRequest(BaseModel):
         default=240, ge=5, le=1440,
         description="Max session duration before auto-release",
     )
+    access_mode: str = Field(
+        default="open", pattern="^(open|code)$",
+        description="'open' = claimable by eligible roles; "
+                    "'code' = class pool, claimable only via an access code",
+    )
     auto_scaling_enabled: bool = Field(
         default=False,
         description="Whether to auto-scale beyond min/max based on demand",
@@ -65,10 +70,39 @@ class VMRequestRequest(BaseModel):
         None,
         description="Request a specific pool (must be allowed for your role).",
     )
+    code: Optional[str] = Field(
+        None, min_length=6, max_length=16, pattern="^[A-Za-z0-9]+$",
+        description="Class access code for a teacher (code-gated) pool. "
+                    "Without a code, only 'open' pools are claimable.",
+    )
 
 
 class VMReleaseRequest(BaseModel):
     reason: str = Field(
         default="user_logout",
         pattern="^(user_logout|timeout|admin_action|vm_error|session_expired)$",
+    )
+
+
+class TeacherPoolCreateRequest(BaseModel):
+    """Body for the teacher (faculty) class-pool creation endpoint.
+
+    Only the pool name and VM count come from the teacher — the compute
+    template (image / flavor / network / spec) is fixed server-side.
+    """
+
+    name: str = Field(..., min_length=3, max_length=100, description="Class pool name (unique)")
+    vm_count: int = Field(
+        ..., ge=1, le=100,
+        description="Number of VMs (and later, access codes) for the class",
+    )
+
+
+class TeacherExpandRequest(BaseModel):
+    """Grow a class pool: raise its capacity, dispatch create_vm jobs and
+    issue matching access codes (one per added VM seat)."""
+
+    add_vms: int = Field(
+        ..., ge=1, le=40,
+        description="How many extra VM seats to add to the class pool",
     )

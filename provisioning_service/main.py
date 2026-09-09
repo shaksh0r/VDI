@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
+from .api import admin, admin_vms, pools, teachers, vms
 from .db import create_database_pool
 from .openstack import OpenStackClient
 
@@ -25,7 +28,12 @@ async def lifespan(app: FastAPI):
                 config.DB_HOST, config.DB_PORT, config.DB_NAME)
 
     app.state.openstack = OpenStackClient(
-        auth_token=config.OPENSTACK_AUTH_TOKEN,
+        auth_url=config.OPENSTACK_AUTH_URL,
+        username=config.OPENSTACK_USERNAME,
+        password=config.OPENSTACK_PASSWORD,
+        project_name=config.OPENSTACK_PROJECT_NAME,
+        user_domain=config.OPENSTACK_USER_DOMAIN_NAME,
+        project_domain=config.OPENSTACK_PROJECT_DOMAIN_NAME,
         compute_url=config.OPENSTACK_COMPUTE_URL,
         network_url=config.OPENSTACK_NETWORK_URL,
         image_url=config.OPENSTACK_IMAGE_URL,
@@ -58,6 +66,25 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+# Browser frontends (served by the mirroring service) call /provision/*
+# directly with Bearer tokens. No credentials/cookies are used, so a
+# wildcard origin is safe; set ALLOWED_ORIGINS (comma-separated) in prod.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(pools.router)
+app.include_router(teachers.router)
+app.include_router(vms.router)
+app.include_router(admin.router)
+app.include_router(admin_vms.router)
 
 
 
