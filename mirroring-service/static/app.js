@@ -82,17 +82,20 @@ function setStatus(text, ok) {
 
 function setView(mode) {
   // mode: "login" | "idle" | "connected"
+  // Explicit display values (never "") so inline styles always win over
+  // stylesheet/[hidden]-attribute defaults — "" silently leaves elements
+  // hidden (this was the blank-screen bug after connecting).
   var showLogin = (mode === "login");
   var showIdle  = (mode === "idle");
   var showDisp  = (mode === "connected");
 
-  loginEl.style.display       = showLogin ? "" : "none";
-  placeholderEl.style.display = showIdle  ? "" : "none";
-  displayEl.style.display     = showDisp  ? "" : "none";
+  loginEl.style.display       = showLogin ? "flex"  : "none";
+  placeholderEl.style.display = showIdle  ? "flex"  : "none";
+  displayEl.style.display     = showDisp  ? "block" : "none";
+  logoutBtn.style.display     = showLogin ? "none"  : "inline-flex";
 
   connectBtn.disabled    = showLogin;
   disconnectBtn.disabled = !showDisp;
-  logoutBtn.hidden       = showLogin;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

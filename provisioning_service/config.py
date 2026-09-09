@@ -45,6 +45,11 @@ RECONCILIATION_INTERVAL_SECONDS = int(os.getenv("RECONCILIATION_INTERVAL_SECONDS
 JOB_POLL_INTERVAL_SECONDS       = int(os.getenv("JOB_POLL_INTERVAL_SECONDS",       "5"))
 VM_CREATION_POLL_INTERVAL       = int(os.getenv("VM_CREATION_POLL_INTERVAL",       "10"))
 VM_CREATION_TIMEOUT_SECONDS     = int(os.getenv("VM_CREATION_TIMEOUT_SECONDS",     "300"))
+# How long finalize waits for the guest's RDP server to accept connections
+# before marking the instance ready. Cloudlab guests can take several
+# minutes to boot and start xrdp; the instance stays 'provisioning' (and
+# unclaimable) during this window.
+RDP_READY_TIMEOUT_SECONDS       = int(os.getenv("RDP_READY_TIMEOUT_SECONDS",       "600"))
 OPENSTACK_REQUEST_TIMEOUT       = int(os.getenv("OPENSTACK_REQUEST_TIMEOUT",       "30"))
 
 #VM creation defaults

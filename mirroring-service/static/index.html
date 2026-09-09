@@ -92,8 +92,8 @@
     ════════════════════════════════════════════════════ -->
     <main class="viewport" id="viewport">
 
-      <!-- Login state — shown when not signed in -->
-      <div class="login-state" id="login" hidden>
+      <!-- Login state — shown when not signed in (visibility via setView) -->
+      <div class="login-state" id="login">
         <div class="login-state__card">
           <p class="login-state__heading">Sign in to VDI</p>
           <form class="login-state__form" id="login-form">
@@ -108,7 +108,7 @@
       </div>
 
       <!-- Idle state — logged in, no active session -->
-      <div class="idle-state" id="placeholder" hidden>
+      <div class="idle-state" id="placeholder">
         <div class="idle-state__glyph">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
             <rect x="4" y="6" width="32" height="22" rx="3" stroke="currentColor" stroke-width="1.5"/>
@@ -123,7 +123,7 @@
       </div>
 
       <!-- Guacamole mounts its display element here -->
-      <div class="rdp-surface" id="display" hidden></div>
+      <div class="rdp-surface" id="display"></div>
 
     </main>
 

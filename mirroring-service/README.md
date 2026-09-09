@@ -67,8 +67,11 @@ remote desktop appears in the browser.
   teardown, so transient drops don't destroy non-persistent VMs (and the
   frontend auto-reconnect can resume the same VM).
 - **Client input whitelist:** only `mouse`/`key`/`size`/`clipboard`/`sync`/
-  `disconnect` instructions reach guacd; `nop` keepalives are stripped;
-  handshake instructions and malformed frames are dropped.
+  `disconnect`/`nop` instructions reach guacd; handshake instructions and
+  malformed frames are dropped. `nop` keepalives are **forwarded** — guacd
+  treats any instruction as user activity and aborts sessions idle for ~15 s
+  ("User is not responding"); the browser's 5 s nop is what keeps idle
+  sessions alive.
 - **Limits:** viewport params are clamped (640–7680 × 480–4320, dpi 48–288);
   instruction buffers are capped; concurrent sessions and per-IP sessions are
   capped (close 1013).

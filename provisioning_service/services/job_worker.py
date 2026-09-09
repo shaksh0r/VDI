@@ -289,15 +289,20 @@ async def _finalize_vm_async(task, instance_id: str, openstack_vm_id: str, job_i
             )
         port_id = ports[0]["id"]
 
-        fip_id = (instance["connection_details"] or {}).get("fip_id")
-        if fip_id:
-            fips = (await neutron.list_floating_ips(client)).get("floatingips", [])
-            fip = next((f for f in fips if f["id"] == fip_id), None)
-            if fip is None:
-                raise _PermanentFailure(
-                    f"stored floating ip {fip_id} no longer exists"
-                )
-            floating_ip_addr = fip["floating_ip_address"]
+        # Idempotent FIP attach. A retried finalize (transient DB error,
+        # worker restart, etc.) may already have associated a FIP with this
+        # port; attaching a second one fails with
+        # FloatingIPPortAlreadyAssociated and turns a recoverable retry
+        # into a permanent error — leaving zombie 'error' instances.
+        fips = (await neutron.list_floating_ips(client)).get("floatingips", [])
+        port_fip = next((f for f in fips if f.get("port_id") == port_id), None)
+        if port_fip is not None:
+            fip_id = port_fip["id"]
+            floating_ip_addr = port_fip["floating_ip_address"]
+            logger.info(
+                "reusing existing FIP %s (%s) on port %s",
+                fip_id, floating_ip_addr, port_id,
+            )
         else:
             created = await neutron.create_floating_ip(
                 client,
@@ -310,6 +315,47 @@ async def _finalize_vm_async(task, instance_id: str, openstack_vm_id: str, job_i
             if not fip_id:
                 raise _PermanentFailure(f"failed to allocate floating ip: {created}")
             floating_ip_addr = fip.get("floating_ip_address")
+
+        # ── RDP readiness probe ────────────────────────────────────────────
+        # Do NOT mark the instance ready until the guest has booted and the
+        # RDP server actually accepts connections. Freshly provisioned VMs
+        # take minutes to start xrdp; users connecting during that window
+        # hit session failures, and repeated failed connections can wedge
+        # the VM's xrdp (a self-reinforcing failure loop). The probe waits
+        # for a TCP accept on the RDP port, then lets the session layer
+        # settle for a grace period before the VM becomes claimable.
+        rdp_ready = False
+        probe_deadline = time.time() + config.RDP_READY_TIMEOUT_SECONDS
+        while time.time() < probe_deadline:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(floating_ip_addr, 3389), timeout=5
+                )
+                writer.close()
+                await writer.wait_closed()
+                rdp_ready = True
+                break
+            except Exception:
+                await asyncio.sleep(config.VM_CREATION_POLL_INTERVAL)
+        if not rdp_ready:
+            raise _PermanentFailure(
+                f"RDP port 3389 never opened on {floating_ip_addr} within "
+                f"{config.VM_CREATION_TIMEOUT_SECONDS}s"
+            )
+        # Grace period: xrdp can accept TCP before LightDM/PAM is fully
+        # ready — a session started in that window drops within seconds.
+        await asyncio.sleep(30)
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(floating_ip_addr, 3389), timeout=5
+            )
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            raise _PermanentFailure(
+                f"RDP port on {floating_ip_addr} closed during settle window"
+            )
+        logger.info("RDP ready on %s — marking instance ready", floating_ip_addr)
 
         async with pool.acquire() as conn:
             await conn.execute(

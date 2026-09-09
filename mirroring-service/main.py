@@ -450,8 +450,10 @@ def _clamp(value, lo: int, hi: int, default: int) -> int:
 
 # Instructions a browser is allowed to send into guacd. Everything else
 # (select/connect/args/size-bombs, tunnel internals, malformed frames)
-# is dropped. `nop` is allowed here but filtered out before forwarding —
-# guacd must never receive keepalives (see browser_to_guacd).
+# is dropped. `nop` is allowed AND forwarded: guacd treats any received
+# instruction as user activity and aborts the session with "User is not
+# responding" after ~15s without traffic — the browser's 5s nop keepalive
+# is what keeps idle sessions alive.
 ALLOWED_CLIENT_OPCODES = {
     "mouse", "key", "size", "clipboard", "sync", "disconnect", "nop",
 }
@@ -737,12 +739,14 @@ async def guacd_tunnel(websocket: WebSocket):
                 data = await websocket.receive_text()
                 stripped = data.strip()
 
-                # Filter 1: Guacamole JS nop keepalive — must not reach guacd
-                if stripped == "3.nop;":
-                    continue
+                # NOTE: the browser's `nop` keepalive is FORWARDED to guacd.
+                # guacd treats any instruction as user activity and aborts
+                # idle sessions after ~15s ("User is not responding"); the
+                # browser's 5s nop is what keeps the session alive. Previous
+                # versions stripped it, which killed every idle session.
 
-                # Filter 2: Opcode whitelist — only mouse/key/size/clipboard/
-                # sync/disconnect frames reach guacd. This blocks handshake
+                # Opcode whitelist — only mouse/key/size/clipboard/sync/
+                # disconnect/nop frames reach guacd. This blocks handshake
                 # hijacking (select/connect), size bombs and malformed frames.
                 if not _client_frame_allowed(stripped):
                     logger.warning(
