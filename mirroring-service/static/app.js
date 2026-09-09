@@ -66,13 +66,24 @@ var showLoginBtn  = document.getElementById("show-login");
 var adminPaneEl     = document.getElementById("admin-pane");
 var teacherPaneEl   = document.getElementById("teacher-pane");
 var adminUserForm   = document.getElementById("admin-user-form");
+var auRole          = document.getElementById("au-role");
 var auFullname      = document.getElementById("au-fullname");
 var auUsername      = document.getElementById("au-username");
 var auEmail         = document.getElementById("au-email");
 var auPassword      = document.getElementById("au-password");
+var auSid           = document.getElementById("au-sid");
+var auDept          = document.getElementById("au-dept");
+var auStudentRow    = document.getElementById("au-student-row");
 var adminMsg        = document.getElementById("admin-msg");
 var adminRefreshBtn = document.getElementById("admin-refresh");
 var adminUserList   = document.getElementById("admin-user-list");
+var tabUsersBtn     = document.getElementById("tab-users");
+var tabPoolsBtn     = document.getElementById("tab-pools");
+var consoleUsersEl  = document.getElementById("console-users");
+var consolePoolsEl  = document.getElementById("console-pools");
+var poolsRefreshBtn = document.getElementById("pools-refresh");
+var adminPoolMsg    = document.getElementById("admin-pool-msg");
+var adminPoolList   = document.getElementById("admin-pool-list");
 var poolCreateForm  = document.getElementById("pool-create-form");
 var tpName          = document.getElementById("tp-name");
 var tpCount         = document.getElementById("tp-count");
@@ -214,9 +225,13 @@ function staffFetch(base, path, opts) {
   });
 }
 
-// ── Admin pane: teacher accounts ──────────────────────────────────────────────
+// ── Admin console: accounts ───────────────────────────────────────────────────
+function roleLabel(r) {
+  return { student: "Student", faculty: "Teacher", admin: "Admin", guest: "Guest" }[r] || r;
+}
+
 function loadAdminUsers() {
-  return staffFetch(authApiBase(), "/auth/admin/users?role=faculty")
+  return staffFetch(authApiBase(), "/auth/admin/users")
     .then(function (resp) {
       if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
       return resp.json();
@@ -225,35 +240,49 @@ function loadAdminUsers() {
       var users = (data && data.users) || [];
       adminUserList.innerHTML = users.length
         ? users.map(function (u) {
+            var isAdmin = (u.role === "admin");
+            var delBtn = isAdmin
+              ? '<span class="chip chip--muted">protected</span>'
+              : '<button type="button" class="btn btn--mini btn--danger" ' +
+                'data-action="del-user" data-id="' + u.user_id + '" ' +
+                'data-name="' + escHtml(u.username) + '">Delete</button>';
             return '<div class="staff-row">' +
               '<div class="staff-row__main">' +
                 '<span class="staff-row__name">' + escHtml(u.full_name || u.username) + '</span>' +
                 '<span class="staff-row__sub">@' + escHtml(u.username) + ' · ' + escHtml(u.email) + '</span>' +
               '</div>' +
-              '<div class="staff-row__meta">' + escHtml(u.role) +
-                '<span class="chip chip--muted">' + escHtml(fmtDate(u.created_at)) + '</span>' +
+              '<div class="staff-row__meta">' +
+                '<span class="chip chip--role">' + escHtml(roleLabel(u.role)) + '</span>' +
+                '<span class="staff-row__meta-line">' +
+                  delBtn +
+                '</span>' +
               '</div>' +
             '</div>';
           }).join("")
-        : '<p class="staff-empty">No teacher accounts yet — create the first one above.</p>';
+        : '<p class="staff-empty">No accounts yet.</p>';
     })
     .catch(function (err) {
       if (err && err.message === "auth-expired") return;
       adminUserList.innerHTML =
-        '<p class="staff-empty">Could not load accounts — provisioning service unreachable?</p>';
+        '<p class="staff-empty">Could not load accounts — auth service unreachable?</p>';
     });
 }
 
-function createTeacher(e) {
+function createAdminUser(e) {
   e.preventDefault();
   setManageMsg(adminMsg, "", false);
+  var isStudent = (auRole.value === "student");
   var payload = {
     full_name: auFullname.value.trim(),
     username:  auUsername.value.trim(),
     email:     auEmail.value.trim(),
     password:  auPassword.value,
-    role:      "faculty",
+    role:      auRole.value,
   };
+  if (isStudent) {
+    payload.student_id = auSid.value.trim() || null;
+    payload.department = auDept.value.trim() || null;
+  }
   if (!payload.full_name || !payload.username || !payload.email) {
     setManageMsg(adminMsg, "All fields are required", false);
     return;
@@ -266,7 +295,7 @@ function createTeacher(e) {
     setManageMsg(adminMsg, "Password must be at least 8 characters", false);
     return;
   }
-  setStatus("Creating teacher account…", false);
+  setStatus("Creating account…", false);
   return staffFetch(authApiBase(), "/auth/admin/users", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -276,7 +305,10 @@ function createTeacher(e) {
     return resp.json();
   }).then(function (u) {
     adminUserForm.reset();
-    setManageMsg(adminMsg, "Teacher @" + u.username + " created — share the credentials with them.", true);
+    auRole.value = "student";
+    auStudentRow.style.display = "flex";
+    setManageMsg(adminMsg, (isStudent ? "Student" : "Teacher") + " @" + u.username +
+      " created — share the credentials with them.", true);
     setStatus("Ready", false);
     loadAdminUsers();
   }).catch(function (err) {
@@ -284,6 +316,288 @@ function createTeacher(e) {
     setManageMsg(adminMsg, err.message || "Creation failed", false);
     setStatus("Disconnected", false);
   });
+}
+
+function deleteAdminUser(userId, username) {
+  var msg = "Delete account “" + username + "”?\n\n" +
+    "Their login sessions and assignments are removed immediately. " +
+    "If they are using a VM right now, it is returned to its pool " +
+    "within ~30 seconds (a walk-in VM is destroyed and refilled).";
+  if (!window.confirm(msg)) return;
+  setStatus("Deleting account…", false);
+  return staffFetch(authApiBase(), "/auth/admin/users/" + encodeURIComponent(userId), {
+    method: "DELETE",
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (out) {
+    setStatus("Ready", false);
+    setManageMsg(adminMsg, "Deleted “" + out.deleted_user + "”" +
+      (out.note ? " — " + out.note : "") + ".", true);
+    loadAdminUsers();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setStatus("Ready", false);
+    setManageMsg(adminMsg, err.message || "Delete failed", false);
+  });
+}
+
+// ── Admin console: pools & VMs ────────────────────────────────────────────────
+var expandedPoolId = null;   // pool detail currently expanded (after reloads)
+
+function statusChip(status) {
+  var cls = "chip--muted";
+  if (status === "ready" || status === "active") cls = "chip--ok";
+  else if (status === "in_use" || status === "deleting") cls = "chip--warn";
+  else if (status === "error") cls = "chip--err";
+  return '<span class="chip ' + cls + '">' + escHtml(status) + '</span>';
+}
+
+function poolModeLabel(p) {
+  var parts = [];
+  parts.push(p.desktop_type === "persistent" ? "reserved" : "walk-in");
+  parts.push(p.access_mode === "code" ? "code-gated" : "open");
+  return parts.join(" · ");
+}
+
+function loadAdminPools() {
+  setManageMsg(adminPoolMsg, "", false);
+  return staffFetch(provApiBase(), "/admin/pools")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (data) {
+      var pools = (data && data.pools) || [];
+      adminPoolList.innerHTML = pools.length
+        ? pools.map(function (p) {
+            var isOpen = (expandedPoolId === p.pool_id);
+            return '<div class="pool-card" data-pool="' + p.pool_id + '">' +
+              '<div class="staff-row">' +
+                '<div class="staff-row__main">' +
+                  '<span class="staff-row__name">' + escHtml(p.name) + '</span>' +
+                  '<span class="staff-row__sub">' + p.current_count + "/" + p.max_vms +
+                    " VMs · min " + p.min_vms + " · session " + p.max_session_minutes +
+                    " min · " + escHtml(poolModeLabel(p)) + '</span>' +
+                '</div>' +
+                '<div class="staff-row__meta">' +
+                  statusChip(p.status) +
+                  '<span class="staff-row__meta-line">' +
+                    '<button type="button" class="btn btn--mini" data-action="toggle-detail" data-id="' + p.pool_id + '">' +
+                      (isOpen ? "Close" : "Manage") + '</button>' +
+                    '<button type="button" class="btn btn--mini btn--danger" data-action="del-pool" data-id="' + p.pool_id + '" data-name="' + escHtml(p.name) + '">Delete pool</button>' +
+                  '</span>' +
+                '</div>' +
+              '</div>' +
+              (isOpen ? '<div class="pool-detail" data-detail="' + p.pool_id + '"></div>' : '') +
+            '</div>';
+          }).join("")
+        : '<p class="staff-empty">No pools.</p>';
+      if (expandedPoolId) {
+        var host = adminPoolList.querySelector('[data-pool="' + expandedPoolId + '"] .pool-detail');
+        if (host) loadPoolDetail(expandedPoolId, host);
+      }
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      adminPoolList.innerHTML =
+        '<p class="staff-empty">Could not load pools — provisioning service unreachable?</p>';
+    });
+}
+
+function loadPoolDetail(poolId, hostEl) {
+  hostEl.innerHTML = '<p class="staff-empty">Loading…</p>';
+  return staffFetch(provApiBase(), "/admin/pools/" + encodeURIComponent(poolId) + "/detail")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (d) { renderPoolDetail(d, hostEl); })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      hostEl.innerHTML = '<p class="staff-empty">Could not load pool detail.</p>';
+    });
+}
+
+function renderPoolDetail(d, hostEl) {
+  var p = d.pool;
+  var instances = d.instances || [];
+  var jobs = (d.job_summary || []).map(function (j) {
+    return j.count + " " + j.job_type.replace("_vm", "") + " " + j.status;
+  }).join(" · ");
+  hostEl.innerHTML =
+    '<div class="pool-detail__grid">' +
+      '<div class="pool-detail__col">' +
+        '<div class="pool-detail__head">' +
+          '<span class="pool-detail__title">Settings</span>' +
+          '<button type="button" class="btn btn--mini btn--connect" data-action="save-settings" data-id="' + p.pool_id + '">Save changes</button>' +
+        '</div>' +
+        '<div class="settings-grid">' +
+          '<label class="settings-field"><span>Name</span>' +
+            '<input data-field="name" type="text" value="' + escHtml(p.name) + '" /></label>' +
+          '<label class="settings-field"><span>Status</span>' +
+            '<select data-field="status">' +
+              '<option value="active"' + (p.status === "active" ? " selected" : "") + '>active</option>' +
+              '<option value="inactive"' + (p.status === "inactive" ? " selected" : "") + '>inactive</option>' +
+            '</select></label>' +
+          '<label class="settings-field"><span>Min VMs</span>' +
+            '<input data-field="min_vms" type="number" min="0" max="500" value="' + p.min_vms + '" /></label>' +
+          '<label class="settings-field"><span>Max VMs</span>' +
+            '<input data-field="max_vms" type="number" min="1" max="500" value="' + p.max_vms + '" /></label>' +
+          '<label class="settings-field"><span>Session limit (min)</span>' +
+            '<input data-field="max_session_minutes" type="number" min="5" max="1440" value="' + p.max_session_minutes + '" /></label>' +
+          '<label class="settings-field settings-field--check"><span>Auto-scaling</span>' +
+            '<input data-field="auto_scaling_enabled" type="checkbox"' + (p.auto_scaling_enabled ? " checked" : "") + ' /></label>' +
+        '</div>' +
+        '<p class="pool-detail__fixed">desktop ' + escHtml(p.desktop_type) + ' · access ' + escHtml(p.access_mode) +
+          ' · roles ' + escHtml((p.allowed_roles || []).join(", ")) + '</p>' +
+        '<p class="manage-msg" data-field-msg></p>' +
+      '</div>' +
+      '<div class="pool-detail__col">' +
+        '<div class="pool-detail__head"><span class="pool-detail__title">VMs (' + instances.length + ")</span></div>" +
+        (instances.length
+          ? instances.map(function (v) {
+              var actions = '';
+              if (v.status !== "deleting") {
+                if (v.assigned_username) {
+                  actions += '<button type="button" class="btn btn--mini" data-action="vm-release" data-vm="' + v.instance_id + '" data-name="' + escHtml(v.pool_name) + '">End session</button>';
+                }
+                actions += '<button type="button" class="btn btn--mini btn--danger" data-action="vm-delete" data-vm="' + v.instance_id + '">Destroy VM</button>';
+              } else {
+                actions = '<span class="chip chip--warn">deleting…</span>';
+              }
+              var who = v.assigned_username ? "@" + escHtml(v.assigned_username) : '<span class="staff-empty--inline">free</span>';
+              return '<div class="vm-row">' +
+                '<div class="vm-row__main">' +
+                  '<span class="vm-row__name">VM ' + v.instance_id.slice(0, 8) + statusChip(v.status) + '</span>' +
+                  '<span class="vm-row__sub">' + escHtml(v.pool_name) + ' · ' +
+                    escHtml(v.floating_ip || "no IP") + ' · assigned to ' + who + '</span>' +
+                '</div>' +
+                '<div class="vm-row__actions">' + actions + '</div>' +
+              '</div>';
+            }).join("")
+          : '<p class="staff-empty">No VMs in this pool.</p>') +
+        (jobs ? '<p class="pool-detail__fixed">jobs · ' + escHtml(jobs) + '</p>' : '') +
+      '</div>' +
+    '</div>';
+}
+
+function savePoolSettings(poolId, hostEl) {
+  var fields = {};
+  hostEl.querySelectorAll("[data-field]").forEach(function (el) {
+    var key = el.getAttribute("data-field");
+    if (key === "auto_scaling_enabled") fields[key] = el.checked;
+    else if (key === "min_vms" || key === "max_vms" || key === "max_session_minutes") {
+      var n = parseInt(el.value, 10);
+      fields[key] = isNaN(n) ? null : n;
+    } else fields[key] = el.value.trim();
+  });
+  var msgEl = hostEl.querySelector("[data-field-msg]");
+  setManageMsg(msgEl, "", false);
+  return staffFetch(provApiBase(), "/admin/pools/" + encodeURIComponent(poolId), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (updated) {
+    setManageMsg(msgEl, "Settings saved for “" + updated.name + "”.", true);
+    loadAdminPools();  // re-render with fresh counts (keeps detail open)
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setManageMsg(msgEl, err.message || "Save failed", false);
+  });
+}
+
+function deleteAdminPool(poolId, name) {
+  var msg = "Delete pool “" + name + "”?\n\n" +
+    "Cascading delete:\n" +
+    "• every active student session ends\n" +
+    "• queued VM creations are cancelled\n" +
+    "• every VM is destroyed in OpenStack (servers + IPs)\n\n" +
+    "This cannot be undone.";
+  if (!window.confirm(msg)) return;
+  setStatus("Deleting pool…", false);
+  return staffFetch(provApiBase(), "/admin/pools/" + encodeURIComponent(poolId), {
+    method: "DELETE",
+  }).then(function (resp) {
+    if (resp.status === 204) return { ok: true };
+    return apiError(resp).then(function (m) { throw new Error(m); });
+  }).then(function () {
+    setStatus("Ready", false);
+    setManageMsg(adminPoolMsg, "Pool “" + name + "” deleted — VMs are being destroyed.", true);
+    expandedPoolId = null;
+    loadAdminPools();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setStatus("Ready", false);
+    setManageMsg(adminPoolMsg, err.message || "Delete failed", false);
+  });
+}
+
+function vmAction(action, vmId, extra) {
+  var verb = (action === "vm-release")
+    ? 'End the session of this VM' + (extra ? " in “" + extra + "”" : "") + "?"
+    : "Destroy this VM in OpenStack (server + IP)? The student's session ends. This cannot be undone.";
+  if (!window.confirm(verb)) return;
+  setStatus(action === "vm-release" ? "Releasing VM…" : "Destroying VM…", false);
+  return staffFetch(provApiBase(), "/admin/vms/" + encodeURIComponent(vmId) +
+    (action === "vm-release" ? "/release" : "/delete"), {
+    method: "POST",
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (out) {
+    setStatus("Ready", false);
+    var note = out.destroyed
+      ? " — walk-in VM will be destroyed and the pool refills."
+      : (out.assignment_closed ? " — session ended, VM returned to pool." : "");
+    setManageMsg(adminPoolMsg, "Done" + note, true);
+    loadAdminPools();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setStatus("Ready", false);
+    setManageMsg(adminPoolMsg, err.message || "Action failed", false);
+  });
+}
+
+function onAdminUserListClick(e) {
+  var btn = e.target.closest("[data-action]");
+  if (!btn || btn.getAttribute("data-action") !== "del-user") return;
+  deleteAdminUser(btn.getAttribute("data-id"), btn.getAttribute("data-name"));
+}
+
+function onAdminPoolClick(e) {
+  var btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  var action = btn.getAttribute("data-action");
+  var id = btn.getAttribute("data-id");
+  if (action === "toggle-detail") {
+    expandedPoolId = (expandedPoolId === id) ? null : id;
+    loadAdminPools();
+  } else if (action === "del-pool") {
+    deleteAdminPool(id, btn.getAttribute("data-name"));
+  } else if (action === "save-settings") {
+    var hostEl = btn.closest(".pool-detail");
+    if (hostEl) savePoolSettings(id, hostEl);
+  } else if (action === "vm-release" || action === "vm-delete") {
+    vmAction(action, btn.getAttribute("data-vm"), btn.getAttribute("data-name"));
+  }
+}
+
+function switchAdminTab(tab) {
+  var poolsOn = (tab === "pools");
+  tabUsersBtn.classList.toggle("tab--on", !poolsOn);
+  tabPoolsBtn.classList.toggle("tab--on", poolsOn);
+  consoleUsersEl.style.display = poolsOn ? "none" : "block";
+  consolePoolsEl.style.display = poolsOn ? "block" : "none";
+  if (poolsOn) loadAdminPools();
+}
+
+function loadAdminConsole() {
+  loadAdminUsers();
+  if (consolePoolsEl.style.display !== "none") loadAdminPools();
 }
 
 // ── Teacher pane: class pools ─────────────────────────────────────────────────
@@ -387,7 +701,7 @@ function enterWorkspace() {
   var role = tokenUser ? tokenUser.role : "";
   if (role === "admin") {
     setView("admin");
-    loadAdminUsers();
+    loadAdminConsole();
   } else if (role === "faculty") {
     setView("teacher");
     loadTeacherDashboard();
@@ -1098,8 +1412,16 @@ disconnectBtn.addEventListener("click", disconnect);
 logoutBtn.addEventListener("click", logout);
 
 // Staff dashboards
-adminUserForm.addEventListener("submit", createTeacher);
+adminUserForm.addEventListener("submit", createAdminUser);
+auRole.addEventListener("change", function() {
+  auStudentRow.style.display = (auRole.value === "student") ? "flex" : "none";
+});
+adminUserList.addEventListener("click", onAdminUserListClick);
 adminRefreshBtn.addEventListener("click", function() { loadAdminUsers(); });
+tabUsersBtn.addEventListener("click", function() { switchAdminTab("users"); });
+tabPoolsBtn.addEventListener("click", function() { switchAdminTab("pools"); });
+poolsRefreshBtn.addEventListener("click", function() { loadAdminPools(); });
+adminPoolList.addEventListener("click", onAdminPoolClick);
 poolCreateForm.addEventListener("submit", createPool);
 poolRefreshBtn.addEventListener("click", function() {
   loadTeacherPools();
@@ -1141,7 +1463,7 @@ document.addEventListener("MSFullscreenChange",     onViewportResize);
       // Admin dashboard — account management, no RDP sessions.
       setView("admin");
       setStatus("Ready", false);
-      loadAdminUsers();
+      loadAdminConsole();
       return;
     }
     if (role === "faculty") {

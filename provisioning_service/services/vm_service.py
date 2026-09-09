@@ -203,6 +203,159 @@ async def release_vm(conn, user_id, reason: str = "user_logout") -> None:
         )
 
 
+async def release_instance(conn, instance_id: str, reason: str = "admin_action") -> dict:
+    """Admin force-release of a VM session, keyed by instance.
+
+    Closes any open assignment for the instance and follows the pool's
+    lifecycle semantics: non-persistent instances are destroyed (a
+    delete_vm job is dispatched), persistent ones return to 'ready'.
+    Used by the admin console (Release) — an open assignment is a
+    precondition for deleting an instance in the worker.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT i.instance_id, i.pool_id, i.status AS instance_status,
+               i.assigned_user_id, p.desktop_type,
+               ua.assignment_id
+        FROM desktop_instances i
+        JOIN desktop_pools p ON p.pool_id = i.pool_id
+        LEFT JOIN user_assignments ua
+               ON ua.instance_id = i.instance_id AND ua.released_at IS NULL
+        WHERE i.instance_id = $1
+        """,
+        instance_id,
+    )
+    if row is None or row["instance_status"] == "deleted":
+        return {"found": False}
+
+    assignment_id = row["assignment_id"]
+    has_session   = assignment_id is not None
+    is_held       = has_session or row["assigned_user_id"] is not None
+    destroy       = (
+        row["desktop_type"] == "non_persistent" and is_held
+    ) or (
+        # Ownerless in-use non-persistent orphan — clean it up proactively.
+        row["desktop_type"] == "non_persistent"
+        and row["instance_status"] == "in_use"
+    )
+
+    delete_job_id = None
+    async with conn.transaction():
+        if has_session:
+            await conn.execute(
+                """
+                UPDATE user_assignments
+                SET released_at = NOW(), release_reason = $1
+                WHERE assignment_id = $2 AND released_at IS NULL
+                """,
+                reason,
+                assignment_id,
+            )
+        if destroy:
+            await conn.execute(
+                """
+                UPDATE desktop_instances
+                SET status = 'deleting', assigned_user_id = NULL,
+                    assigned_at = NULL, updated_at = NOW()
+                WHERE instance_id = $1
+                """,
+                instance_id,
+            )
+            delete_job_id = await conn.fetchval(
+                """
+                INSERT INTO provisioning_jobs (pool_id, instance_id, job_type)
+                VALUES ($1, $2, 'delete_vm')
+                RETURNING job_id
+                """,
+                row["pool_id"],
+                instance_id,
+            )
+        elif is_held:
+            await conn.execute(
+                """
+                UPDATE desktop_instances
+                SET status = 'ready', assigned_user_id = NULL,
+                    assigned_at = NULL, updated_at = NOW()
+                WHERE instance_id = $1
+                """,
+                instance_id,
+            )
+
+    if delete_job_id is not None:
+        app.send_task(
+            "provisioning_service.services.job_worker.delete_vm_task",
+            args=[str(instance_id), str(delete_job_id)],
+        )
+
+    return {
+        "found": True,
+        "assignment_closed": has_session,
+        "destroyed": destroy,
+        "job_id": str(delete_job_id) if delete_job_id else None,
+    }
+
+
+async def destroy_instance(conn, instance_id: str, reason: str = "admin_action") -> dict:
+    """Admin force-destroy of a VM regardless of pool lifecycle.
+
+    Closes any open assignment (the worker refuses open ones), marks the
+    instance 'deleting' and dispatches the delete_vm job that destroys
+    the OpenStack server + floating IP.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT i.pool_id, i.status AS instance_status,
+               ua.assignment_id
+        FROM desktop_instances i
+        LEFT JOIN user_assignments ua
+               ON ua.instance_id = i.instance_id AND ua.released_at IS NULL
+        WHERE i.instance_id = $1
+        """,
+        instance_id,
+    )
+    if row is None or row["instance_status"] == "deleted":
+        return {"found": False}
+    if row["instance_status"] == "deleting":
+        return {"found": True, "already_deleting": True, "job_id": None}
+
+    assignment_id = row["assignment_id"]
+    async with conn.transaction():
+        if assignment_id is not None:
+            await conn.execute(
+                """
+                UPDATE user_assignments
+                SET released_at = NOW(), release_reason = $1
+                WHERE assignment_id = $2 AND released_at IS NULL
+                """,
+                reason,
+                assignment_id,
+            )
+        await conn.execute(
+            """
+            UPDATE desktop_instances
+            SET status = 'deleting', assigned_user_id = NULL,
+                assigned_at = NULL, updated_at = NOW()
+            WHERE instance_id = $1
+            """,
+            instance_id,
+        )
+        job_id = await conn.fetchval(
+            """
+            INSERT INTO provisioning_jobs (pool_id, instance_id, job_type)
+            VALUES ($1, $2, 'delete_vm')
+            RETURNING job_id
+            """,
+            row["pool_id"],
+            instance_id,
+        )
+
+    app.send_task(
+        "provisioning_service.services.job_worker.delete_vm_task",
+        args=[str(instance_id), str(job_id)],
+    )
+    return {"found": True, "already_deleting": False, "job_id": str(job_id)}
+
+
 async def get_vm_status(conn, user_id) -> VMStatusResponse:
     active = await _find_active_assignment(conn, user_id)
     if active is None:

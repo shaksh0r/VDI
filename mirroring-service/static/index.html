@@ -140,35 +140,67 @@
         </div>
       </div>
 
-      <!-- Admin state — account management (role 'admin' only) -->
+      <!-- Admin state — full admin console (role 'admin' only) -->
       <div class="manage-state" id="admin-pane" style="display: none;">
-        <div class="manage-state__wrap">
-          <div class="manage-card">
-            <p class="manage-card__title">Create a teacher account</p>
-            <form class="login-state__form" id="admin-user-form">
-              <input id="au-fullname" type="text" placeholder="Full name"
-                     autocomplete="off" required />
-              <div class="form-row">
-                <input id="au-username" type="text" placeholder="Username (min 4)"
-                       autocomplete="off" autocapitalize="none" required />
-                <input id="au-email" type="email" placeholder="Email"
-                       autocomplete="off" autocapitalize="none" required />
-              </div>
-              <input id="au-password" type="password" placeholder="Temporary password (min 8)"
-                     autocomplete="new-password" required />
-              <p class="form-hint">Teacher accounts are created by an administrator only —
-                public self-registration stays open to students only.</p>
-              <button type="submit" class="btn btn--connect">Create teacher account</button>
-            </form>
-            <p class="manage-msg" id="admin-msg"></p>
+        <div class="console">
+          <div class="tabs">
+            <button type="button" class="tab tab--on" id="tab-users">Users</button>
+            <button type="button" class="tab" id="tab-pools">Pools &amp; VMs</button>
           </div>
 
-          <div class="manage-card">
-            <div class="manage-card__head">
-              <p class="manage-card__title">Teacher accounts</p>
-              <button type="button" class="btn btn--ghost" id="admin-refresh">Refresh</button>
+          <!-- ── Tab: Users ─────────────────────────────────────────────── -->
+          <div class="console-tab" id="console-users">
+            <div class="manage-card">
+              <p class="manage-card__title">Create account</p>
+              <form class="login-state__form" id="admin-user-form">
+                <div class="form-row">
+                  <select id="au-role" aria-label="Role">
+                    <option value="student">Student</option>
+                    <option value="faculty">Teacher</option>
+                  </select>
+                  <input id="au-fullname" type="text" placeholder="Full name"
+                         autocomplete="off" required />
+                </div>
+                <div class="form-row">
+                  <input id="au-username" type="text" placeholder="Username (min 4)"
+                         autocomplete="off" autocapitalize="none" required />
+                  <input id="au-email" type="email" placeholder="Email"
+                         autocomplete="off" autocapitalize="none" required />
+                </div>
+                <div class="form-row" id="au-student-row">
+                  <input id="au-sid" type="text" placeholder="Student ID (optional)"
+                         autocomplete="off" />
+                  <input id="au-dept" type="text" placeholder="Department (optional)"
+                         autocomplete="off" />
+                </div>
+                <input id="au-password" type="password" placeholder="Temporary password (min 8)"
+                       autocomplete="new-password" required />
+                <p class="form-hint">Only an administrator can create accounts.
+                  Students may also self-register; teacher accounts exist only here.</p>
+                <button type="submit" class="btn btn--connect">Create account</button>
+              </form>
+              <p class="manage-msg" id="admin-msg"></p>
             </div>
-            <div class="staff-list" id="admin-user-list"></div>
+
+            <div class="manage-card">
+              <div class="manage-card__head">
+                <p class="manage-card__title">Accounts</p>
+                <button type="button" class="btn btn--ghost" id="admin-refresh">Refresh</button>
+              </div>
+              <div class="staff-list" id="admin-user-list"></div>
+            </div>
+          </div>
+
+          <!-- ── Tab: Pools & VMs ───────────────────────────────────────── -->
+          <div class="console-tab" id="console-pools" style="display: none;">
+            <div class="manage-card">
+              <div class="manage-card__head">
+                <p class="manage-card__title">Pools &amp; VMs</p>
+                <button type="button" class="btn btn--ghost" id="pools-refresh">Refresh</button>
+              </div>
+              <p class="manage-msg" id="admin-pool-msg"></p>
+              <div class="staff-list" id="admin-pool-list"></div>
+            </div>
           </div>
         </div>
       </div>

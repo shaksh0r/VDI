@@ -164,6 +164,14 @@ async def update_pool(conn, pool_id, updates: PoolUpdateRequest) -> PoolResponse
 
 
 async def delete_pool(conn, pool_id) -> bool:
+    """Delete a pool (and everything attached to it, cascadingly).
+
+    Soft-deletes the pool row, force-ends every open student session
+    (release_reason 'admin_action'), cancels not-yet-started create_vm
+    jobs, and enqueues a delete_vm job for every remaining instance —
+    the worker destroys the OpenStack servers / floating IPs. Instances
+    already being deleted keep their in-flight job.
+    """
     row = await conn.fetchrow(
         "SELECT pool_id FROM desktop_pools WHERE pool_id = $1 AND deleted_at IS NULL",
         pool_id,
@@ -181,10 +189,35 @@ async def delete_pool(conn, pool_id) -> bool:
             """,
             pool_id,
         )
+        # 1) Force-end sessions — the delete worker refuses instances
+        #    that still hold an open assignment.
+        await conn.execute(
+            """
+            UPDATE user_assignments
+            SET released_at = NOW(), release_reason = 'admin_action',
+                session_duration_seconds =
+                    EXTRACT(EPOCH FROM (NOW() - assigned_at))::int
+            WHERE pool_id = $1 AND released_at IS NULL
+            """,
+            pool_id,
+        )
+        # 2) Cancel create jobs that never started.
+        await conn.execute(
+            """
+            UPDATE provisioning_jobs
+            SET status = 'cancelled',
+                error_message = 'pool deleted',
+                completed_at = NOW()
+            WHERE pool_id = $1 AND job_type = 'create_vm' AND status = 'queued'
+            """,
+            pool_id,
+        )
+        # 3) Destroy every remaining instance (worker skips instances
+        #    without an OpenStack id gracefully).
         instances = await conn.fetch(
             """
             SELECT instance_id FROM desktop_instances
-            WHERE pool_id = $1 AND status <> 'deleted'
+            WHERE pool_id = $1 AND status NOT IN ('deleted', 'deleting')
             """,
             pool_id,
         )

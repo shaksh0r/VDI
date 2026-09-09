@@ -915,3 +915,268 @@ body.is-connected .chrome__session-dot {
   padding: 6px 2px;
   line-height: 1.5;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   ADMIN CONSOLE — tabs, pool cards, VM rows, settings forms
+═══════════════════════════════════════════════════════════════════ */
+.console {
+  width: min(1080px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0 auto;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  background: var(--c-surface-1);
+  border: 1px solid var(--c-line-1);
+  border-radius: 12px;
+  width: fit-content;
+}
+
+.tab {
+  padding: 7px 18px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-text-2);
+  font-family: var(--f-ui);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+
+.tab:hover { color: var(--c-text-1); }
+
+.tab--on {
+  background: var(--c-accent-bg);
+  color: var(--c-accent-hi);
+}
+
+.console-tab { display: flex; flex-direction: column; gap: 16px; }
+
+select,
+input[type="number"] {
+  font-family: var(--f-ui);
+}
+
+.login-state__form select {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--c-line-3);
+  background: var(--c-base);
+  color: var(--c-text-1);
+  font-size: 13px;
+  font-family: var(--f-ui);
+}
+
+.btn--mini {
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: 6px;
+  background: var(--c-surface-3);
+  color: var(--c-text-2);
+  border: 1px solid var(--c-line-2);
+}
+
+.btn--mini:hover {
+  color: var(--c-text-1);
+  border-color: var(--c-line-3);
+  background: var(--c-overlay);
+}
+
+.btn--mini.btn--connect {
+  background: var(--c-accent-lo);
+  color: #fff;
+  border-color: transparent;
+}
+
+.btn--mini.btn--connect:hover {
+  background: var(--c-accent);
+}
+
+.btn--danger {
+  background: var(--c-err-bg);
+  color: var(--c-err);
+  border-color: transparent;
+}
+
+.btn--danger:hover {
+  background: rgba(244, 63, 94, 0.22);
+  color: var(--c-err);
+}
+
+.staff-row__meta-line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip--role {
+  color: var(--c-accent-hi);
+  background: var(--c-accent-bg);
+}
+
+.chip--warn {
+  color: var(--c-warn);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.chip--err {
+  color: var(--c-err);
+  background: var(--c-err-bg);
+}
+
+/* Pool card + expandable detail */
+.pool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pool-card > .staff-row { background: var(--c-surface-2); }
+
+.pool-detail {
+  border: 1px solid var(--c-line-2);
+  border-left: 2px solid var(--c-accent);
+  border-radius: 10px;
+  background: var(--c-surface-1);
+  padding: 14px;
+}
+
+.pool-detail__grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 2fr) minmax(0, 3fr);
+  gap: 18px;
+}
+
+@media (max-width: 920px) {
+  .pool-detail__grid { grid-template-columns: 1fr; }
+}
+
+.pool-detail__col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pool-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pool-detail__title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c-text-3);
+}
+
+.pool-detail__fixed {
+  font-size: 11px;
+  color: var(--c-text-3);
+  line-height: 1.5;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+
+@media (max-width: 560px) {
+  .settings-grid { grid-template-columns: 1fr; }
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--c-text-3);
+}
+
+.settings-field input,
+.settings-field select {
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--c-line-2);
+  background: var(--c-base);
+  color: var(--c-text-1);
+  font-size: 12.5px;
+  font-family: var(--f-ui);
+}
+
+.settings-field input:focus,
+.settings-field select:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.settings-field--check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-field--check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--c-accent);
+}
+
+/* VM rows inside pool detail */
+.vm-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line-1);
+  border-radius: 8px;
+}
+
+.vm-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.vm-row__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--c-text-1);
+  font-family: var(--f-mono);
+}
+
+.vm-row__sub {
+  font-size: 11px;
+  color: var(--c-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vm-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.staff-empty--inline { color: var(--c-text-4); }

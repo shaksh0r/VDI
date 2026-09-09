@@ -61,7 +61,15 @@ class AdminUserCreateRequest(BaseModel):
     role: str = Field(
         "faculty",
         pattern="^(faculty|student)$",
-        description="Accounts created by an admin. Teacher accounts use role 'faculty'.",
+        description="Accounts created by an admin: 'faculty' (teacher) or 'student'.",
+    )
+    student_id: Optional[str] = Field(
+        None, max_length=50,
+        description="University ID (student accounts)",
+    )
+    department: Optional[str] = Field(
+        None, max_length=100,
+        description="Department (student accounts)",
     )
 
 
@@ -380,15 +388,18 @@ async def admin_create_user(
         """
         INSERT INTO users (
             username, email, password_hash, full_name,
+            student_id, department,
             role, is_active, email_verified
         )
-        VALUES ($1, $2, $3, $4, $5::user_role, TRUE, TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::user_role, TRUE, TRUE)
         RETURNING user_id, username, email, full_name, role, is_active, created_at
         """,
         payload.username,
         payload.email,
         password_hash,
         payload.full_name,
+        payload.student_id,
+        payload.department,
         payload.role,
     )
 
@@ -439,3 +450,89 @@ async def admin_list_users(
         ],
         total=len(rows),
     )
+
+
+@app.delete("/auth/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: str,
+    db=Depends(get_db),
+    authorization: Optional[str] = Header(default=None),
+    x_auth_token: Optional[str] = Header(default=None),
+):
+    """Hard-delete a student/teacher account with cascading cleanup.
+
+    DB-level cascades remove the user's sessions, assignments and
+    notifications. Any VM they held is freed by the provisioning
+    reconciler within one beat (~30 s): non-persistent VMs are destroyed
+    and refilled, persistent (class) VMs return to their pool.
+
+    Guard: admins cannot be deleted, and a user who owns active pools
+    (teachers with class pools) must have those pools deleted first —
+    pool rows reference their creator and their VMs must be destroyed
+    through the provisioning job machinery, not by SQL.
+    """
+    await _require_admin(db, authorization, x_auth_token)
+
+    target = await db.fetchrow(
+        """
+        SELECT user_id, username, role, is_active, deleted_at
+        FROM users WHERE user_id = $1
+        """,
+        user_id,
+    )
+    if target is None or target["deleted_at"] is not None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    if str(target["role"]) == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="admin accounts cannot be deleted",
+        )
+
+    active_pools = await db.fetchval(
+        """
+        SELECT COUNT(*) FROM desktop_pools
+        WHERE created_by = $1 AND deleted_at IS NULL
+        """,
+        user_id,
+    )
+    if active_pools:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{target['username']} owns {active_pools} active pool(s). "
+                "Delete those pools first (this destroys their VMs and "
+                "ends the students' sessions) before deleting the account."
+            ),
+        )
+
+    has_active_session = await db.fetchval(
+        """
+        SELECT COUNT(*) FROM user_assignments
+        WHERE user_id = $1 AND released_at IS NULL
+        """,
+        user_id,
+    )
+
+    deleted = await db.fetchrow(
+        """
+        DELETE FROM users WHERE user_id = $1 RETURNING username, role
+        """,
+        user_id,
+    )
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    note = None
+    if has_active_session:
+        note = (
+            f"{deleted['username']} held an active VM session — the VM is "
+            "being returned to its pool (30 s max)."
+        )
+    return {
+        "ok": True,
+        "deleted_user": deleted["username"],
+        "role": str(deleted["role"]),
+        "cascaded": {"sessions": True, "assignments": True},
+        "note": note,
+    }
