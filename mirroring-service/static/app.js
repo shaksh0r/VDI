@@ -619,6 +619,8 @@ function loadPoolTemplate() {
     });
 }
 
+var expandedTeacherPoolId = null;   // pool whose codes panel is open
+
 function loadTeacherPools() {
   return staffFetch(provApiBase(), "/teacher/pools")
     .then(function (resp) {
@@ -637,24 +639,159 @@ function loadTeacherPools() {
             var stateChip = (p.status === "active")
               ? '<span class="chip chip--ok">' + escHtml(p.status) + '</span>'
               : '<span class="chip chip--muted">' + escHtml(p.status) + '</span>';
-            return '<div class="staff-row">' +
-              '<div class="staff-row__main">' +
-                '<span class="staff-row__name">' + escHtml(p.name) + '</span>' +
-                '<span class="staff-row__sub">' + counts +
-                  ' · total ' + p.total_instances + "/" + p.max_vms + " VMs · created " +
-                  escHtml(fmtDate(p.created_at)) + '</span>' +
+            var isOpen = (expandedTeacherPoolId === p.pool_id);
+            return '<div class="pool-card" data-tpool="' + p.pool_id + '">' +
+              '<div class="staff-row">' +
+                '<div class="staff-row__main">' +
+                  '<span class="staff-row__name">' + escHtml(p.name) + '</span>' +
+                  '<span class="staff-row__sub">' + counts +
+                    ' · total ' + p.total_instances + "/" + p.max_vms + " VMs · created " +
+                    escHtml(fmtDate(p.created_at)) + '</span>' +
+                '</div>' +
+                '<div class="staff-row__meta">' + stateChip +
+                  '<span class="staff-row__meta-line">' +
+                    '<button type="button" class="btn btn--mini" data-action="tg-codes" data-id="' + p.pool_id + '">' +
+                      (isOpen ? "Close" : "Access codes") + '</button>' +
+                  '</span>' +
+                '</div>' +
               '</div>' +
-              '<div class="staff-row__meta">' + stateChip + '</div>' +
+              (isOpen ? '<div class="pool-detail" data-tdetail="' + p.pool_id + '"></div>' : '') +
             '</div>';
           }).join("")
         : '<p class="staff-empty">No class pools yet. Create one on the left — ' +
-          'provisioning takes a few minutes per VM. Access codes arrive with the next milestone.</p>';
+          'provisioning takes a few minutes per VM.</p>';
+      if (expandedTeacherPoolId) {
+        var host = teacherPoolList.querySelector(
+          '[data-tpool="' + expandedTeacherPoolId + '"] [data-tdetail]');
+        if (host) loadTeacherCodes(expandedTeacherPoolId, host);
+      }
     })
     .catch(function (err) {
       if (err && err.message === "auth-expired") return;
       teacherPoolList.innerHTML =
         '<p class="staff-empty">Could not load pools — provisioning service unreachable?</p>';
     });
+}
+
+// ── Teacher codes panel (Part 2) ──────────────────────────────────────────────
+function toggleTeacherCodes(poolId) {
+  expandedTeacherPoolId = (expandedTeacherPoolId === poolId) ? null : poolId;
+  loadTeacherPools();
+}
+
+function codeStateChip(c) {
+  if (c.revoked_at) return '<span class="chip chip--muted">revoked</span>';
+  if (c.redeemed_at) {
+    return '<span class="chip chip--role">redeemed by @' + escHtml(c.redeemed_by || "?") + '</span>';
+  }
+  return '<span class="chip chip--ok">available</span>';
+}
+
+function loadTeacherCodes(poolId, hostEl) {
+  hostEl.innerHTML = '<p class="staff-empty">Loading codes…</p>';
+  return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) + "/codes")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (d) {
+      var open = d.codes.filter(function (c) { return !c.revoked_at; });
+      var head =
+        '<div class="pool-detail__head">' +
+          '<span class="pool-detail__title">Access codes · ' + d.active_codes + "/" +
+            d.capacity + " active (" + d.redeemed_codes + " redeemed)</span>" +
+          '<span class="staff-row__meta-line">' +
+            '<button type="button" class="btn btn--mini" data-action="tg-gen" data-id="' + d.pool_id + '">' +
+              (d.active_codes < d.capacity ? "Generate missing codes" : "Codes complete") + '</button>' +
+            '<button type="button" class="btn btn--mini btn--connect" data-action="tg-download" data-id="' + d.pool_id + '" data-name="' + escHtml(d.pool_name) + '"' +
+              (open.length ? '' : ' disabled') + '>Download codes.json</button>' +
+          '</span>' +
+        '</div>' +
+        '<p class="manage-msg" data-codes-msg></p>' +
+        (d.codes.length
+          ? '<div class="code-list">' + d.codes.map(function (c) {
+              var meta = c.redeemed_at ? ' · ' + escHtml(fmtDate(c.redeemed_at)) : '';
+              return '<div class="code-row">' +
+                '<span class="code-row__code">' + escHtml(c.code) + '</span>' +
+                '<span class="code-row__meta">' +
+                  codeStateChip(c) +
+                  '<span class="code-row__date">created ' + escHtml(fmtDate(c.created_at)) + meta + '</span>' +
+                '</span>' +
+              '</div>';
+            }).join("") + '</div>'
+          : '<p class="staff-empty">No codes yet — press “Generate missing codes” to create one per VM.</p>');
+      hostEl.innerHTML = head;
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      hostEl.innerHTML = '<p class="staff-empty">Could not load codes — ' +
+        escHtml(err.message || "unexpected error") + '</p>';
+    });
+}
+
+function generateTeacherCodes(poolId, hostEl) {
+  var msgEl = hostEl.querySelector("[data-codes-msg]");
+  setManageMsg(msgEl, "", false);
+  return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) + "/codes", {
+    method: "POST",
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (out) {
+    setManageMsg(msgEl, "Generated " + out.generated + " new code(s) — " +
+      out.active_codes + "/" + out.capacity + " active now.", true);
+    loadTeacherCodes(poolId, hostEl);
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setManageMsg(msgEl, err.message || "Generation failed", false);
+  });
+}
+
+function downloadTeacherCodes(data) {
+  var clean = {
+    pool: {
+      name: data.pool_name,
+      capacity_vms: data.capacity,
+      active_codes: data.active_codes,
+    },
+    generated_at: new Date().toISOString(),
+    instructions: "One code per VM seat. Give each student their own code — " +
+      "they enter it to connect to their VM.",
+    codes: data.codes.filter(function (c) { return !c.revoked_at; })
+                     .map(function (c) { return c.code; }),
+  };
+  var safeName = String(data.pool_name).replace(/[^A-Za-z0-9_-]+/g, "-");
+  var blob = new Blob([JSON.stringify(clean, null, 2)], { type: "application/json" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "codes-" + safeName + ".json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+}
+
+function onTeacherPoolClick(e) {
+  var btn = e.target.closest("[data-action]");
+  if (!btn) return;
+  var action = btn.getAttribute("data-action");
+  var id = btn.getAttribute("data-id");
+  if (action === "tg-codes") {
+    toggleTeacherCodes(id);
+  } else if (action === "tg-gen") {
+    var hostEl = btn.closest(".pool-detail");
+    if (hostEl) generateTeacherCodes(id, hostEl);
+  } else if (action === "tg-download") {
+    // Re-fetch fresh data so the file never includes stale codes.
+    staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(id) + "/codes")
+      .then(function (resp) {
+        if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+        return resp.json();
+      })
+      .then(downloadTeacherCodes)
+      .catch(function () {});
+  }
 }
 
 function loadTeacherDashboard() {
@@ -1423,6 +1560,7 @@ tabPoolsBtn.addEventListener("click", function() { switchAdminTab("pools"); });
 poolsRefreshBtn.addEventListener("click", function() { loadAdminPools(); });
 adminPoolList.addEventListener("click", onAdminPoolClick);
 poolCreateForm.addEventListener("submit", createPool);
+teacherPoolList.addEventListener("click", onTeacherPoolClick);
 poolRefreshBtn.addEventListener("click", function() {
   loadTeacherPools();
   loadPoolTemplate();

@@ -7,17 +7,24 @@ Part 1 of the teacher flow:
   * POST /teacher/pools        — create a class pool for N VMs. The pool is
     desktop_type 'persistent' + access_mode 'code': instances live until
     the teacher tears the class down and are claimable only via access
-    codes (code generation lands in Part 2, redemption in Part 3).
+    codes (redemption lands in Part 3).
   * GET  /teacher/pools        — pools owned by the calling user (never
     other teachers' pools), with live instance counts.
+
+Part 2 of the teacher flow (access codes, one per VM seat):
+  * GET  /teacher/pools/{id}/codes  — codes + redemption state
+  * POST /teacher/pools/{id}/codes  — generate the codes still missing to
+    reach capacity (max_vms); never duplicates or clobbers existing ones.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import config
@@ -25,6 +32,9 @@ from ..message_queue.celery_app import app
 from ..models.requests import PoolCreateRequest, TeacherPoolCreateRequest
 from ..models.responses import (
     PoolResponse,
+    TeacherCodeEntry,
+    TeacherCodeGenerateResponse,
+    TeacherCodeListResponse,
     TeacherPoolListResponse,
     TeacherPoolSummary,
     TeacherTemplateResponse,
@@ -38,6 +48,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/teacher", tags=["teachers"])
 
 staff = require_roles("admin", "faculty")
+
+# Codes: 8 chars from an unambiguous alphabet (no 0/O/1/I/L) →
+# 32^8 ≈ 1.1e12 combinations; DB uniqueness guarantees no duplicates.
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+_CODE_LENGTH = 8
+_CODE_MAX_ATTEMPTS = 25
 
 # Template resolution cache (flavor spec fetched from Nova): key -> (flavor_id, ts, spec)
 _TEMPLATE_CACHE_TTL_SECONDS = 120
@@ -251,3 +267,152 @@ async def list_class_pools(
         for row in rows
     ]
     return TeacherPoolListResponse(pools=pools, total=len(pools))
+
+
+# ── Access codes (Part 2) ──────────────────────────────────────────────────────
+
+async def _own_code_pool(conn, user: dict, pool_id: str) -> Any:
+    """Load a code-gated pool the caller is allowed to manage.
+
+    Owner (created_by == caller) or admin. Anything else — including an
+    open pool or another teacher's pool — answers 404 so pool ids never
+    leak to non-owners.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT pool_id, name, max_vms, access_mode, created_by, deleted_at
+        FROM desktop_pools
+        WHERE pool_id = $1
+        """,
+        pool_id,
+    )
+    if (
+        row is None
+        or row["deleted_at"] is not None
+        or row["access_mode"] != "code"
+    ):
+        raise HTTPException(status_code=404, detail="pool not found")
+    if str(row["created_by"]) != user["user_id"] and user["role"] != "admin":
+        raise HTTPException(status_code=404, detail="pool not found")
+    return row
+
+
+def _new_code() -> str:
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
+
+
+async def _insert_codes(conn, pool_id: str, count: int) -> list[str]:
+    """Insert `count` unique codes; retries on the astronomically rare
+    collision. Raises 409 if uniqueness cannot be satisfied."""
+    created: list[str] = []
+    async with conn.transaction():
+        for _ in range(count):
+            inserted = False
+            for _attempt in range(_CODE_MAX_ATTEMPTS):
+                candidate = _new_code()
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO pool_access_codes (pool_id, code)
+                        VALUES ($1, $2)
+                        """,
+                        pool_id,
+                        candidate,
+                    )
+                except asyncpg.UniqueViolationError:
+                    continue
+                created.append(candidate)
+                inserted = True
+                break
+            if not inserted:
+                raise HTTPException(
+                    status_code=409,
+                    detail="could not generate a unique code after "
+                    f"{_CODE_MAX_ATTEMPTS} attempts",
+                )
+    return created
+
+
+@router.get("/pools/{pool_id}/codes", response_model=TeacherCodeListResponse)
+async def list_codes(
+    pool_id: str,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    pool = await _own_code_pool(conn, user, pool_id)
+    rows = await conn.fetch(
+        """
+        SELECT c.code, c.redeemed_at, c.revoked_at, c.created_at,
+               u.username AS redeemed_username
+        FROM pool_access_codes c
+        LEFT JOIN users u ON u.user_id = c.redeemed_by
+        WHERE c.pool_id = $1
+        ORDER BY c.created_at ASC
+        """,
+        pool_id,
+    )
+    codes = [
+        TeacherCodeEntry(
+            code=row["code"],
+            redeemed_by=row["redeemed_username"],
+            redeemed_at=row["redeemed_at"],
+            revoked_at=row["revoked_at"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+    active = [c for c in codes if c.revoked_at is None]
+    redeemed = [c for c in active if c.redeemed_at is not None]
+    return TeacherCodeListResponse(
+        pool_id=str(pool["pool_id"]),
+        pool_name=pool["name"],
+        capacity=int(pool["max_vms"]),
+        active_codes=len(active),
+        redeemed_codes=len(redeemed),
+        codes=codes,
+    )
+
+
+@router.post(
+    "/pools/{pool_id}/codes",
+    response_model=TeacherCodeGenerateResponse,
+    status_code=201,
+)
+async def generate_codes(
+    pool_id: str,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    pool = await _own_code_pool(conn, user, pool_id)
+    capacity = int(pool["max_vms"])
+
+    active_count = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM pool_access_codes
+        WHERE pool_id = $1 AND revoked_at IS NULL
+        """,
+        pool_id,
+    )
+    missing = capacity - int(active_count)
+    if missing <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"pool already has {active_count} active access code(s) "
+                f"(capacity {capacity})"
+            ),
+        )
+
+    new_codes = await _insert_codes(conn, pool_id, missing)
+    logger.info(
+        "teacher %s generated %d access code(s) for pool '%s'",
+        user.get("username"), len(new_codes), pool["name"],
+    )
+    return TeacherCodeGenerateResponse(
+        pool_id=str(pool["pool_id"]),
+        pool_name=pool["name"],
+        capacity=capacity,
+        generated=len(new_codes),
+        active_codes=active_count + len(new_codes),
+        codes=new_codes,
+    )

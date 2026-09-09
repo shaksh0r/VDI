@@ -1180,3 +1180,41 @@ input[type="number"] {
 }
 
 .staff-empty--inline { color: var(--c-text-4); }
+
+/* Teacher access-code list (Part 2) */
+.code-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.code-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line-1);
+  border-radius: 8px;
+}
+
+.code-row__code {
+  font-family: var(--f-mono);
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: var(--c-text-1);
+}
+
+.code-row__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.code-row__date {
+  font-size: 10.5px;
+  color: var(--c-text-4);
+}

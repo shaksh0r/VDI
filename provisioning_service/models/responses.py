@@ -70,6 +70,32 @@ class TeacherPoolListResponse(BaseModel):
     total: int
 
 
+class TeacherCodeEntry(BaseModel):
+    code: str
+    redeemed_by: Optional[str] = None   # username of the redeeming student
+    redeemed_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class TeacherCodeListResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    capacity: int                    # max_vms — one code per VM seat
+    active_codes: int                # un-revoked codes issued so far
+    redeemed_codes: int              # of the active ones, claimed by students
+    codes: list[TeacherCodeEntry]
+
+
+class TeacherCodeGenerateResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    capacity: int
+    generated: int                   # codes created by this call
+    active_codes: int                # un-revoked total after this call
+    codes: list[str]                 # only the newly generated ones
+
+
 class VMClaimResponse(BaseModel):
 
     ok: bool = True
