@@ -41,6 +41,7 @@ var disconnectBtn = document.getElementById("disconnect");
 var logoutBtn     = document.getElementById("logout");
 var displayEl     = document.getElementById("display");
 var placeholderEl = document.getElementById("placeholder");
+var classCodeEl  = document.getElementById("class-code");
 var loginEl       = document.getElementById("login");
 var loginForm     = document.getElementById("login-form");
 var loginUser     = document.getElementById("login-username");
@@ -959,6 +960,7 @@ function logout() {
   activeSession = null;
   expiresAt = null;
   setToken(null, null);
+  if (classCodeEl) classCodeEl.value = "";
   sessionEl.textContent = "Not signed in";
   showAuthPane("login");
   setView("login");
@@ -984,12 +986,21 @@ function handleAuthExpired() {
 }
 
 // ── Session allocation ────────────────────────────────────────────────────────
+// Returns the class code (uppercased) currently entered, or "" for open pools.
+function enteredClassCode() {
+  return classCodeEl ? classCodeEl.value.trim().toUpperCase() : "";
+}
+
 function connect() {
   if (!token) { setView("login"); return; }
   manualDisconnect = false;
   cancelClaimRetry();
   cancelReconnect();
-  setStatus("Requesting a VM…", false);
+  var code = enteredClassCode();
+  setStatus(code ? "Requesting your class VM…" : "Requesting a VM…", false);
+
+  var body = { pool_type: "non_persistent" };
+  if (code) body.code = code;   // code pools are unreachable without a code
 
   return fetch(provApiBase() + "/provision/connect", {
     method: "POST",
@@ -997,7 +1008,7 @@ function connect() {
       "Content-Type": "application/json",
       "Authorization": "Bearer " + token,
     },
-    body: JSON.stringify({ pool_type: "non_persistent" }),
+    body: JSON.stringify(body),
   }).then(function (resp) {
     if (resp.status === 401) { handleAuthExpired(); throw new Error("auth"); }
     if (!resp.ok) return apiError(resp).then(function (m) {
@@ -1020,14 +1031,21 @@ function connect() {
   }).catch(function (err) {
     if (err && err.message === "auth") return;
     if (err && err.status === 503) {
-      // Pool is empty (claim waited and timed out server-side) — show a
-      // message and auto-retry until a VM becomes available.
-      sessionEl.textContent = "No VMs available right now";
-      setStatus("No VMs available — will retry automatically…", false);
+      // No free VM right now (claim waited ~60 s server-side) — show a
+      // message and auto-retry. The code input is kept, so every retry
+      // sends the same code.
+      sessionEl.textContent = code ? "No free VM in your class right now"
+                                   : "No VMs available right now";
+      setStatus("No VM available — will retry automatically…", false);
       scheduleClaimRetry();
       return;
     }
     sessionEl.textContent = "No session assigned.";
+    if (err && err.status === 403) {
+      sessionEl.textContent = "This code belongs to another student";
+      setStatus("Code already claimed — ask your teacher for your own code", false);
+      return;
+    }
     setStatus((err && err.message) || "Connection error", false);
   });
 }

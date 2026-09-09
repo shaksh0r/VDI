@@ -30,7 +30,10 @@ async def connect(
             user["role"],
             pool_id=request.pool_id,
             pool_type=request.pool_type,
+            code=request.code,
         )
+    except vm_service.CodeClaimError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except vm_service.PoolExhaustionError as exc:

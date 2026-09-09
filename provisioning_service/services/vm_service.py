@@ -13,6 +13,15 @@ class PoolExhaustionError(Exception):
     pass
 
 
+class CodeClaimError(Exception):
+    """Access-code problem with an explicit HTTP status for the API."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
 async def _find_active_assignment(conn, user_id):
     return await conn.fetchrow(
         """
@@ -109,14 +118,176 @@ async def _try_claim(conn, user_id, pool_ids):
         return instance
 
 
+async def _resolve_code(conn, user_id: str, role: str, code: str) -> dict:
+    """Validate an access code and bind it to the calling student.
+
+    Rules (Part 3):
+      * unknown code            → 400 invalid
+      * revoked by teacher      → 400 revoked
+      * pool deleted/inactive   → 400 class inactive
+      * role not allowed        → 403
+      * already redeemed by me  → OK (idempotent reconnect)
+      * redeemed by someone else→ 403
+      * unredeemed              → bind atomically to me (race-safe)
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT c.code_id, c.redeemed_by, c.revoked_at,
+               c.affinity_instance_id,
+               p.pool_id, p.name AS pool_name, p.desktop_type,
+               p.max_session_duration_minutes, p.allowed_roles,
+               p.status AS pool_status, p.deleted_at
+        FROM pool_access_codes c
+        JOIN desktop_pools p ON p.pool_id = c.pool_id
+        WHERE c.code = $1
+        """,
+        code.upper(),
+    )
+    if row is None:
+        raise CodeClaimError(400, "Invalid class code — check the code from your teacher")
+    if row["revoked_at"] is not None:
+        raise CodeClaimError(400, "This class code was revoked by the teacher")
+    if row["deleted_at"] is not None or row["pool_status"] != "active":
+        raise CodeClaimError(400, "This class is no longer active")
+
+    allowed = [str(r) for r in (row["allowed_roles"] or [])]
+    if role not in allowed:
+        raise CodeClaimError(403, "Your account is not allowed to use this class pool")
+
+    if row["redeemed_by"] is not None and str(row["redeemed_by"]) != user_id:
+        raise CodeClaimError(403, "This class code already belongs to another student")
+
+    if row["redeemed_by"] is None:
+        bound = await conn.execute(
+            """
+            UPDATE pool_access_codes
+            SET redeemed_by = $1,
+                redeemed_at = COALESCE(redeemed_at, NOW())
+            WHERE code_id = $2 AND redeemed_by IS NULL
+            """,
+            user_id,
+            row["code_id"],
+        )
+        if bound != "UPDATE 1":
+            # Lost a race — another student bound the code first.
+            raise CodeClaimError(403, "This class code already belongs to another student")
+
+    return dict(row)
+
+
+async def _try_claim_code(conn, user_id, code_id, pool_id, affinity_id):
+    """One claim attempt for a code-gated pool.
+
+    Picks the code's reserved VM when it is free, otherwise the
+    least-recently-used free VM that is NOT reserved for another code.
+    On success: opens the assignment, marks the instance in_use and
+    records the one-to-one affinity code → instance.
+    """
+    async with conn.transaction():
+        instance = await conn.fetchrow(
+            """
+            SELECT i.instance_id, i.pool_id, i.floating_ip, i.private_ip,
+                   p.name AS pool_name, p.desktop_type,
+                   p.max_session_duration_minutes
+            FROM desktop_instances i
+            JOIN desktop_pools p ON p.pool_id = i.pool_id
+            WHERE i.pool_id = $1
+              AND i.status = 'ready'
+              AND i.assigned_user_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM pool_access_codes pc
+                  WHERE pc.affinity_instance_id = i.instance_id
+                    AND pc.code_id <> $2
+              )
+            ORDER BY (CASE WHEN $3::uuid IS NOT NULL
+                           THEN (i.instance_id = $3) ELSE FALSE END) DESC,
+                     i.last_accessed_at ASC NULLS FIRST
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+            """,
+            pool_id,
+            code_id,
+            affinity_id,
+        )
+        if instance is None:
+            return None
+        await conn.execute(
+            """
+            INSERT INTO user_assignments
+                (user_id, instance_id, pool_id, assignment_type)
+            VALUES ($1, $2, $3, $4)
+            """,
+            user_id,
+            instance["instance_id"],
+            instance["pool_id"],
+            "persistent"
+            if instance["desktop_type"] == "persistent"
+            else "temporary",
+        )
+        await conn.execute(
+            """
+            UPDATE desktop_instances
+            SET status = 'in_use', assigned_user_id = $1,
+                assigned_at = NOW(), last_accessed_at = NOW(),
+                updated_at = NOW()
+            WHERE instance_id = $2
+            """,
+            user_id,
+            instance["instance_id"],
+        )
+        await conn.execute(
+            """
+            UPDATE pool_access_codes
+            SET affinity_instance_id = $1
+            WHERE code_id = $2
+            """,
+            instance["instance_id"],
+            code_id,
+        )
+        return instance
+
+
+async def _claim_vm_by_code(pool, user_id: str, role: str, code: str) -> VMClaimResponse:
+    """Claim flow for a student presenting a class access code."""
+    async with pool.acquire() as conn:
+        active = await _find_active_assignment(conn, user_id)
+        if active is not None:
+            return _claim_response(active)
+        entry = await _resolve_code(conn, user_id, role, code)
+        code_id = entry["code_id"]
+        pool_id = entry["pool_id"]
+        affinity_id = entry["affinity_instance_id"]
+
+    deadline = time.time() + config.CLAIM_QUEUE_TIMEOUT_SECONDS
+    while True:
+        async with pool.acquire() as conn:
+            claimed = await _try_claim_code(
+                conn, user_id, code_id, pool_id, affinity_id
+            )
+        if claimed is not None:
+            return _claim_response(claimed)
+        if time.time() >= deadline:
+            raise PoolExhaustionError(
+                "your class pool has no free VM right now — "
+                f"waited {config.CLAIM_QUEUE_TIMEOUT_SECONDS}s"
+            )
+        await asyncio.sleep(config.CLAIM_QUEUE_POLL_INTERVAL_SECONDS)
+
+
 async def claim_vm(
     pool,
     user_id,
     role: str,
     pool_id=None,
     pool_type=None,
+    code=None,
 ) -> VMClaimResponse:
     """Claim a VM for a user.
+
+    Two paths:
+      * `code` given — class access code: validated/bound, then the pool's
+        VM reserved for that code is claimed (one-to-one affinity).
+      * otherwise — plain role-based claim restricted to 'open' pools.
 
     `pool` is the asyncpg pool, NOT a checked-out connection: the claim
     wait loop can poll for CLAIM_QUEUE_TIMEOUT_SECONDS, and holding a
@@ -124,6 +295,9 @@ async def claim_vm(
     several students wait concurrently. Each attempt acquires and releases
     a connection of its own.
     """
+    if code:
+        return await _claim_vm_by_code(pool, user_id, role, code)
+
     async with pool.acquire() as conn:
         active = await _find_active_assignment(conn, user_id)
         if active is not None:

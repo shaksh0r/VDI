@@ -243,6 +243,8 @@ CREATE TABLE pool_access_codes (
     redeemed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
     redeemed_at TIMESTAMP,
     revoked_at TIMESTAMP, -- teacher/admin revoked: no longer redeemable
+    affinity_instance_id UUID REFERENCES desktop_instances(instance_id)
+        ON DELETE SET NULL, -- VM reserved for this code (one-to-one)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -250,10 +252,13 @@ CREATE TABLE pool_access_codes (
 CREATE INDEX idx_pool_codes_pool ON pool_access_codes (pool_id);
 CREATE INDEX idx_pool_codes_redeemed_by ON pool_access_codes (redeemed_by)
 WHERE redeemed_by IS NOT NULL;
+CREATE INDEX idx_pool_codes_affinity ON pool_access_codes (affinity_instance_id)
+WHERE affinity_instance_id IS NOT NULL;
 
 COMMENT ON TABLE pool_access_codes IS 'Per-VM access codes for code-gated class pools';
 COMMENT ON COLUMN pool_access_codes.code IS 'Short unambiguous code the student enters to join the class pool';
 COMMENT ON COLUMN pool_access_codes.redeemed_by IS 'Student who redeemed this code (SET NULL if the account is deleted)';
+COMMENT ON COLUMN pool_access_codes.affinity_instance_id IS 'Class VM reserved one-to-one for this code; cleared if the VM is destroyed';
 
 -- ----------------------------------------------------------------------------
 -- Desktop Instances (Virtual Machines)

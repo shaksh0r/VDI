@@ -1218,3 +1218,49 @@ input[type="number"] {
   font-size: 10.5px;
   color: var(--c-text-4);
 }
+
+/* Class-code entry on the student idle screen (Part 3) */
+.code-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  pointer-events: auto;   /* .idle-state disables pointer events globally */
+  width: min(420px, 100%);
+}
+
+.code-entry input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--c-line-3);
+  background: var(--c-base);
+  color: var(--c-text-1);
+  font-family: var(--f-mono);
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.code-entry input::placeholder {
+  font-family: var(--f-ui);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--c-text-4);
+  text-align: center;
+}
+
+.code-entry input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.code-entry__hint {
+  font-size: 11.5px;
+  color: var(--c-text-3);
+  text-align: center;
+  line-height: 1.5;
+}

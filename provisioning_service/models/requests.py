@@ -70,6 +70,11 @@ class VMRequestRequest(BaseModel):
         None,
         description="Request a specific pool (must be allowed for your role).",
     )
+    code: Optional[str] = Field(
+        None, min_length=6, max_length=16, pattern="^[A-Za-z0-9]+$",
+        description="Class access code for a teacher (code-gated) pool. "
+                    "Without a code, only 'open' pools are claimable.",
+    )
 
 
 class VMReleaseRequest(BaseModel):
