@@ -75,6 +75,8 @@ class TeacherCodeEntry(BaseModel):
     redeemed_by: Optional[str] = None   # username of the redeeming student
     redeemed_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
+    affinity_vm: Optional[str] = None   # short id of the VM reserved for this code
+    vm_status: Optional[str] = None     # live status of that VM
     created_at: Optional[datetime] = None
 
 
@@ -94,6 +96,16 @@ class TeacherCodeGenerateResponse(BaseModel):
     generated: int                   # codes created by this call
     active_codes: int                # un-revoked total after this call
     codes: list[str]                 # only the newly generated ones
+
+
+class TeacherExpandResponse(BaseModel):
+    pool_id: str
+    pool_name: str
+    max_vms: int                     # raised capacity after the expansion
+    added_vms: int                   # VMs requested by this call
+    dispatched_jobs: int             # create_vm jobs sent to the worker
+    generated_codes: int             # new access codes issued to match
+    active_codes: int                # un-revoked codes after the expansion
 
 
 class VMClaimResponse(BaseModel):

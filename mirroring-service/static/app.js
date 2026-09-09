@@ -688,6 +688,12 @@ function codeStateChip(c) {
   return '<span class="chip chip--ok">available</span>';
 }
 
+function codeVmMeta(c) {
+  if (!c.affinity_vm) return "";
+  var statusTxt = c.vm_status ? ' · ' + escHtml(c.vm_status) : "";
+  return ' · VM ' + escHtml(c.affinity_vm) + statusTxt;
+}
+
 function loadTeacherCodes(poolId, hostEl) {
   hostEl.innerHTML = '<p class="staff-empty">Loading codes…</p>';
   return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) + "/codes")
@@ -702,8 +708,9 @@ function loadTeacherCodes(poolId, hostEl) {
           '<span class="pool-detail__title">Access codes · ' + d.active_codes + "/" +
             d.capacity + " active (" + d.redeemed_codes + " redeemed)</span>" +
           '<span class="staff-row__meta-line">' +
-            '<button type="button" class="btn btn--mini" data-action="tg-gen" data-id="' + d.pool_id + '">' +
-              (d.active_codes < d.capacity ? "Generate missing codes" : "Codes complete") + '</button>' +
+            '<button type="button" class="btn btn--mini" data-action="tg-gen" data-id="' + d.pool_id + '"' +
+              (d.active_codes < d.capacity ? '' : ' disabled title="All seats have codes"') + '>' +
+              'Generate</button>' +
             '<button type="button" class="btn btn--mini btn--connect" data-action="tg-download" data-id="' + d.pool_id + '" data-name="' + escHtml(d.pool_name) + '"' +
               (open.length ? '' : ' disabled') + '>Download codes.json</button>' +
           '</span>' +
@@ -711,16 +718,27 @@ function loadTeacherCodes(poolId, hostEl) {
         '<p class="manage-msg" data-codes-msg></p>' +
         (d.codes.length
           ? '<div class="code-list">' + d.codes.map(function (c) {
-              var meta = c.redeemed_at ? ' · ' + escHtml(fmtDate(c.redeemed_at)) : '';
+              var vm = codeVmMeta(c);
+              var metaDate = 'created ' + escHtml(fmtDate(c.created_at));
+              if (c.redeemed_at) metaDate += ' · redeemed ' + escHtml(fmtDate(c.redeemed_at));
+              var actions = c.revoked_at
+                ? ''
+                : '<button type="button" class="btn btn--mini" data-action="cd-regenerate" data-id="' + d.pool_id + '" data-code="' + escHtml(c.code) + '" title="Revoke this code and issue a fresh one">Regenerate</button>' +
+                  '<button type="button" class="btn btn--mini btn--danger" data-action="cd-revoke" data-id="' + d.pool_id + '" data-code="' + escHtml(c.code) + '">Revoke</button>';
               return '<div class="code-row">' +
                 '<span class="code-row__code">' + escHtml(c.code) + '</span>' +
                 '<span class="code-row__meta">' +
                   codeStateChip(c) +
-                  '<span class="code-row__date">created ' + escHtml(fmtDate(c.created_at)) + meta + '</span>' +
+                  '<span class="code-row__date">' + metaDate + vm + '</span>' +
+                  (actions ? '<span class="staff-row__meta-line">' + actions + '</span>' : '') +
                 '</span>' +
               '</div>';
             }).join("") + '</div>'
-          : '<p class="staff-empty">No codes yet — press “Generate missing codes” to create one per VM.</p>');
+          : '<p class="staff-empty">No codes yet — press Generate to create one per VM.</p>') +
+        '<div class="pool-detail__foot">' +
+          '<button type="button" class="btn btn--danger" data-action="cd-teardown" data-id="' + d.pool_id + '" data-name="' + escHtml(d.pool_name) + '">Tear down class pool</button>' +
+          '<span class="form-hint">Ends the class: every code stops working, all sessions end and every VM is destroyed.</span>' +
+        '</div>';
       hostEl.innerHTML = head;
     })
     .catch(function (err) {
@@ -778,11 +796,18 @@ function onTeacherPoolClick(e) {
   if (!btn) return;
   var action = btn.getAttribute("data-action");
   var id = btn.getAttribute("data-id");
+  var hostEl = btn.closest(".pool-detail");
+  var code = btn.getAttribute("data-code");
   if (action === "tg-codes") {
     toggleTeacherCodes(id);
   } else if (action === "tg-gen") {
-    var hostEl = btn.closest(".pool-detail");
     if (hostEl) generateTeacherCodes(id, hostEl);
+  } else if (action === "cd-revoke") {
+    if (hostEl) revokeTeacherCode(id, code, hostEl);
+  } else if (action === "cd-regenerate") {
+    if (hostEl) regenerateTeacherCode(id, code, hostEl);
+  } else if (action === "cd-teardown") {
+    teardownClassPool(id, btn.getAttribute("data-name"));
   } else if (action === "tg-download") {
     // Re-fetch fresh data so the file never includes stale codes.
     staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(id) + "/codes")
@@ -793,6 +818,82 @@ function onTeacherPoolClick(e) {
       .then(downloadTeacherCodes)
       .catch(function () {});
   }
+}
+
+function revokeTeacherCode(poolId, code, hostEl) {
+  var msg = "Revoke code " + code + "?\n\n" +
+    "It stops working immediately. If a VM was reserved for it, the VM is " +
+    "released back to the pool. The student's running session (if any) " +
+    "continues until they disconnect.";
+  if (!window.confirm(msg)) return;
+  var msgEl = hostEl.querySelector("[data-codes-msg]");
+  setManageMsg(msgEl, "", false);
+  return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) +
+    "/codes/" + encodeURIComponent(code) + "/revoke", { method: "POST" })
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function () {
+      setManageMsg(msgEl, "Code " + code + " revoked.", true);
+      loadTeacherCodes(poolId, hostEl);
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      setManageMsg(msgEl, err.message || "Revoke failed", false);
+    });
+}
+
+function regenerateTeacherCode(poolId, code, hostEl) {
+  var msg = "Regenerate code " + code + "?\n\n" +
+    "The old code is revoked and replaced with a fresh one for the same seat. " +
+    "Distribute the new code to the student.";
+  if (!window.confirm(msg)) return;
+  var msgEl = hostEl.querySelector("[data-codes-msg]");
+  setManageMsg(msgEl, "", false);
+  return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) +
+    "/codes/" + encodeURIComponent(code) + "/regenerate", { method: "POST" })
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (out) {
+      setManageMsg(msgEl, "Code " + out.revoked_code + " replaced — new code: " +
+        out.new_code + ". Share it with the student.", true);
+      loadTeacherCodes(poolId, hostEl);
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      setManageMsg(msgEl, err.message || "Regenerate failed", false);
+    });
+}
+
+function teardownClassPool(poolId, poolName) {
+  var msg = "Tear down class pool “" + poolName + "”?\n\n" +
+    "Cascading end-of-class:\n" +
+    "• every access code is revoked\n" +
+    "• every student session ends\n" +
+    "• queued VM creations are cancelled\n" +
+    "• every VM is destroyed in OpenStack (servers + IPs)\n\n" +
+    "This cannot be undone.";
+  if (!window.confirm(msg)) return;
+  setStatus("Tearing down class pool…", false);
+  return staffFetch(provApiBase(), "/teacher/pools/" + encodeURIComponent(poolId) + "/teardown", {
+    method: "POST",
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (out) {
+    setStatus("Ready", false);
+    expandedTeacherPoolId = null;
+    setManageMsg(poolCreateMsg, "Class pool “" + out.pool_name +
+      "” torn down — codes revoked, VMs being destroyed.", true);
+    loadTeacherPools();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setStatus("Ready", false);
+    setManageMsg(poolCreateMsg, err.message || "Teardown failed", false);
+  });
 }
 
 function loadTeacherDashboard() {

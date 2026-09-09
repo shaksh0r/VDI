@@ -11,6 +11,7 @@ from .. import config
 from ..db import create_database_pool
 from ..message_queue.celery_app import app
 from ..openstack import OpenStackClient
+from ..openstack import cinder
 from ..openstack import neutron
 from ..openstack import nova
 from ..openstack.errors import OpenStackError
@@ -486,6 +487,25 @@ async def _delete_vm_async(task, instance_id: str, job_id: str):
         if openstack_vm_id:
             response = await nova.delete_server(client, openstack_vm_id)
             _check_deleted(response, f"server {openstack_vm_id}")
+
+        # Some clouds keep the boot volume after server deletion even with
+        # delete_on_termination=True — clean the attached volumes up so the
+        # project quota never leaks.
+        if openstack_vm_id:
+            try:
+                freed = await cinder.delete_volumes_for_server(
+                    client, openstack_vm_id
+                )
+                if freed:
+                    logger.info(
+                        "deleted %d volume(s) orphaned by server %s",
+                        freed, openstack_vm_id,
+                    )
+            except Exception as exc:  # noqa: BLE001 — never fail the job on this
+                logger.warning(
+                    "volume cleanup for server %s failed: %s",
+                    openstack_vm_id, exc,
+                )
 
         async with pool.acquire() as conn:
             async with conn.transaction():

@@ -1264,3 +1264,15 @@ input[type="number"] {
   text-align: center;
   line-height: 1.5;
 }
+
+/* Teacher codes panel footer (Part 4) */
+.pool-detail__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--c-line-1);
+  margin-top: 4px;
+}

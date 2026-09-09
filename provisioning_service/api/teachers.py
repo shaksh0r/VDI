@@ -29,12 +29,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import config
 from ..message_queue.celery_app import app
-from ..models.requests import PoolCreateRequest, TeacherPoolCreateRequest
+from ..models.requests import (
+    PoolCreateRequest,
+    TeacherExpandRequest,
+    TeacherPoolCreateRequest,
+)
 from ..models.responses import (
     PoolResponse,
     TeacherCodeEntry,
     TeacherCodeGenerateResponse,
     TeacherCodeListResponse,
+    TeacherExpandResponse,
     TeacherPoolListResponse,
     TeacherPoolSummary,
     TeacherTemplateResponse,
@@ -343,9 +348,12 @@ async def list_codes(
     rows = await conn.fetch(
         """
         SELECT c.code, c.redeemed_at, c.revoked_at, c.created_at,
-               u.username AS redeemed_username
+               c.affinity_instance_id,
+               u.username AS redeemed_username,
+               vi.status AS vm_status
         FROM pool_access_codes c
         LEFT JOIN users u ON u.user_id = c.redeemed_by
+        LEFT JOIN desktop_instances vi ON vi.instance_id = c.affinity_instance_id
         WHERE c.pool_id = $1
         ORDER BY c.created_at ASC
         """,
@@ -357,6 +365,10 @@ async def list_codes(
             redeemed_by=row["redeemed_username"],
             redeemed_at=row["redeemed_at"],
             revoked_at=row["revoked_at"],
+            affinity_vm=str(row["affinity_instance_id"])[:8]
+            if row["affinity_instance_id"]
+            else None,
+            vm_status=row["vm_status"],
             created_at=row["created_at"],
         )
         for row in rows
@@ -371,6 +383,184 @@ async def list_codes(
         redeemed_codes=len(redeemed),
         codes=codes,
     )
+
+
+async def _get_code_row(conn, pool_id: str, code: str):
+    """Fetch one code row of a pool the caller already owns."""
+    return await conn.fetchrow(
+        """
+        SELECT code_id, code, revoked_at, affinity_instance_id
+        FROM pool_access_codes
+        WHERE pool_id = $1 AND code = $2
+        """,
+        pool_id,
+        code.upper(),
+    )
+
+
+@router.post("/pools/{pool_id}/codes/{code}/revoke")
+async def revoke_code(
+    pool_id: str,
+    code: str,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    """Revoke one access code: it stops working and its reserved VM is
+    released back to the pool. Idempotent for an already-revoked code."""
+    await _own_code_pool(conn, user, pool_id)
+    code = code.upper()
+    row = await _get_code_row(conn, pool_id, code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="code not found in this pool")
+
+    await conn.execute(
+        """
+        UPDATE pool_access_codes
+        SET revoked_at = COALESCE(revoked_at, NOW()),
+            affinity_instance_id = NULL
+        WHERE code_id = $1
+        """,
+        row["code_id"],
+    )
+    logger.info("teacher %s revoked code %s", user.get("username"), code)
+    return {"ok": True, "code": code, "revoked": True}
+
+
+@router.post("/pools/{pool_id}/codes/{code}/regenerate")
+async def regenerate_code(
+    pool_id: str,
+    code: str,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    """Replace a leaked/compromised code: revoke the old one and issue a
+    fresh code for the same seat. The old code stops working immediately."""
+    await _own_code_pool(conn, user, pool_id)
+    code = code.upper()
+    row = await _get_code_row(conn, pool_id, code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="code not found in this pool")
+    if row["revoked_at"] is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"code {code} is already revoked — generate a new one instead",
+        )
+
+    async with conn.transaction():
+        await conn.execute(
+            """
+            UPDATE pool_access_codes
+            SET revoked_at = NOW(), affinity_instance_id = NULL
+            WHERE code_id = $1
+            """,
+            row["code_id"],
+        )
+        new_codes = await _insert_codes(conn, pool_id, 1)
+
+    logger.info(
+        "teacher %s regenerated code %s → %s",
+        user.get("username"), code, new_codes[0],
+    )
+    return {
+        "ok": True,
+        "revoked_code": code,
+        "new_code": new_codes[0],
+    }
+
+
+@router.post(
+    "/pools/{pool_id}/expand",
+    response_model=TeacherExpandResponse,
+)
+async def expand_class_pool(
+    pool_id: str,
+    data: TeacherExpandRequest,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    """Grow a class pool mid-semester: raise capacity by `add_vms`,
+    dispatch that many create_vm jobs and issue matching access codes."""
+    pool = await _own_code_pool(conn, user, pool_id)
+    new_max = int(pool["max_vms"]) + data.add_vms
+    if new_max > config.TEACHER_VM_COUNT_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"pool capacity would reach {new_max}, exceeding the "
+                f"limit of {config.TEACHER_VM_COUNT_LIMIT} VMs"
+            ),
+        )
+
+    await conn.execute(
+        """
+        UPDATE desktop_pools
+        SET max_vms = $1, updated_at = NOW()
+        WHERE pool_id = $2
+        """,
+        new_max,
+        pool_id,
+    )
+    job_ids = await pool_service.insert_create_jobs(
+        conn, pool_id, data.add_vms
+    )
+    for job_id in job_ids:
+        app.send_task(
+            "provisioning_service.services.job_worker.create_vm_task",
+            args=[str(pool_id), str(job_id)],
+        )
+    new_codes = await _insert_codes(conn, pool_id, data.add_vms)
+
+    logger.info(
+        "teacher %s expanded pool '%s' by %d VM(s) → capacity %d "
+        "(%d job(s), %d code(s))",
+        user.get("username"), pool["name"], data.add_vms, new_max,
+        len(job_ids), len(new_codes),
+    )
+    return TeacherExpandResponse(
+        pool_id=str(pool["pool_id"]),
+        pool_name=pool["name"],
+        max_vms=new_max,
+        added_vms=data.add_vms,
+        dispatched_jobs=len(job_ids),
+        generated_codes=len(new_codes),
+        active_codes=await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM pool_access_codes
+            WHERE pool_id = $1 AND revoked_at IS NULL
+            """,
+            pool_id,
+        ),
+    )
+
+
+@router.post("/pools/{pool_id}/teardown")
+async def teardown_class_pool(
+    pool_id: str,
+    user: dict = Depends(staff),
+    conn=Depends(get_db),
+):
+    """End the class: owner-scoped cascade teardown.
+
+    Revokes every code, force-ends every student session, cancels queued
+    VM creations and destroys all VMs of the pool in OpenStack (servers +
+    floating IPs) through the worker. The pool disappears from dashboards
+    immediately.
+    """
+    pool = await _own_code_pool(conn, user, pool_id)
+    await pool_service.delete_pool(conn, pool_id)
+    logger.info(
+        "teacher %s tore down class pool '%s' (%s)",
+        user.get("username"), pool["name"], pool_id,
+    )
+    return {
+        "ok": True,
+        "pool_id": str(pool["pool_id"]),
+        "pool_name": pool["name"],
+        "detail": (
+            "class pool deleted — codes revoked, sessions ended, "
+            "VMs being destroyed"
+        ),
+    }
 
 
 @router.post(

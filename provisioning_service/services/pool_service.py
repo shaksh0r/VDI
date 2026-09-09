@@ -201,6 +201,16 @@ async def delete_pool(conn, pool_id) -> bool:
             """,
             pool_id,
         )
+        # 1b) Revoke every access code and release its reserved VM.
+        await conn.execute(
+            """
+            UPDATE pool_access_codes
+            SET revoked_at = COALESCE(revoked_at, NOW()),
+                affinity_instance_id = NULL
+            WHERE pool_id = $1 AND revoked_at IS NULL
+            """,
+            pool_id,
+        )
         # 2) Cancel create jobs that never started.
         await conn.execute(
             """

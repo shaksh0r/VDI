@@ -96,3 +96,13 @@ class TeacherPoolCreateRequest(BaseModel):
         ..., ge=1, le=100,
         description="Number of VMs (and later, access codes) for the class",
     )
+
+
+class TeacherExpandRequest(BaseModel):
+    """Grow a class pool: raise its capacity, dispatch create_vm jobs and
+    issue matching access codes (one per added VM seat)."""
+
+    add_vms: int = Field(
+        ..., ge=1, le=40,
+        description="How many extra VM seats to add to the class pool",
+    )
