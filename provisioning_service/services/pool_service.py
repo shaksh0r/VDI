@@ -12,6 +12,7 @@ def _row_to_pool_response(row) -> PoolResponse:
         pool_id=str(row["pool_id"]),
         name=row["name"],
         desktop_type=row["desktop_type"],
+        access_mode=row["access_mode"],
         image_id=row["base_image_id"],
         flavor_id=row["flavor_id"],
         network_id=row["network_id"],
@@ -53,11 +54,11 @@ async def create_pool(conn, creator_user_id, data: PoolCreateRequest) -> PoolRes
                 """
                 INSERT INTO desktop_pools (
                     name, base_image_id, flavor_id, network_id,
-                    min_vms, max_vms, desktop_type,
+                    min_vms, max_vms, desktop_type, access_mode,
                     auto_scaling_enabled, allowed_roles,
                     max_session_duration_minutes, created_by
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::user_role[], $10, $11)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::user_role[], $11, $12)
                 RETURNING pool_id
                 """,
                 data.name,
@@ -67,6 +68,7 @@ async def create_pool(conn, creator_user_id, data: PoolCreateRequest) -> PoolRes
                 data.min_vms,
                 data.max_vms,
                 data.desktop_type,
+                data.access_mode,
                 data.auto_scaling_enabled,
                 data.allowed_roles,
                 data.max_session_minutes,

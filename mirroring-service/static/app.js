@@ -62,6 +62,24 @@ var regPass2      = document.getElementById("reg-password2");
 var showSignupBtn = document.getElementById("show-signup");
 var showLoginBtn  = document.getElementById("show-login");
 
+// ── Staff pane refs (admin dashboard / teacher dashboard) ─────────────────────
+var adminPaneEl     = document.getElementById("admin-pane");
+var teacherPaneEl   = document.getElementById("teacher-pane");
+var adminUserForm   = document.getElementById("admin-user-form");
+var auFullname      = document.getElementById("au-fullname");
+var auUsername      = document.getElementById("au-username");
+var auEmail         = document.getElementById("au-email");
+var auPassword      = document.getElementById("au-password");
+var adminMsg        = document.getElementById("admin-msg");
+var adminRefreshBtn = document.getElementById("admin-refresh");
+var adminUserList   = document.getElementById("admin-user-list");
+var poolCreateForm  = document.getElementById("pool-create-form");
+var tpName          = document.getElementById("tp-name");
+var tpCount         = document.getElementById("tp-count");
+var poolCreateMsg   = document.getElementById("pool-create-msg");
+var poolRefreshBtn  = document.getElementById("pool-refresh");
+var teacherPoolList = document.getElementById("teacher-pool-list");
+
 var client   = null;
 var keyboard = null;
 var mouse    = null;
@@ -105,13 +123,15 @@ function showAuthPane(pane) {
 }
 
 function setView(mode) {
-  // mode: "login" | "idle" | "connected"
+  // mode: "login" | "idle" | "connected" | "admin" | "teacher"
   // Explicit display values (never "") so inline styles always win over
   // stylesheet/[hidden]-attribute defaults — "" silently leaves elements
   // hidden (this was the blank-screen bug after connecting).
-  var showLogin = (mode === "login");
-  var showIdle  = (mode === "idle");
-  var showDisp  = (mode === "connected");
+  var showLogin   = (mode === "login");
+  var showIdle    = (mode === "idle");
+  var showDisp    = (mode === "connected");
+  var showAdmin   = (mode === "admin");
+  var showTeacher = (mode === "teacher");
 
   if (showLogin) {
     showAuthPane(authPane);
@@ -119,11 +139,14 @@ function setView(mode) {
     loginEl.style.display  = "none";
     signupEl.style.display = "none";
   }
-  placeholderEl.style.display = showIdle  ? "flex"  : "none";
-  displayEl.style.display     = showDisp  ? "block" : "none";
+  placeholderEl.style.display = showIdle   ? "flex"  : "none";
+  displayEl.style.display     = showDisp   ? "block" : "none";
+  adminPaneEl.style.display   = showAdmin   ? "flex" : "none";
+  teacherPaneEl.style.display = showTeacher ? "flex" : "none";
   logoutBtn.style.display     = showLogin ? "none"  : "inline-flex";
 
-  connectBtn.disabled    = showLogin;
+  // Staff roles manage pools — they never open an RDP session themselves.
+  connectBtn.disabled    = showLogin || showAdmin || showTeacher;
   disconnectBtn.disabled = !showDisp;
 }
 
@@ -154,6 +177,225 @@ function apiError(resp) {
     .catch(function () { return "HTTP " + resp.status; });
 }
 
+// ── Staff dashboard helpers (admin & teacher panes) ───────────────────────────
+// Small string/format helpers shared by the dashboards.
+function escHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function fmtRam(mb) {
+  mb = parseInt(mb, 10);
+  if (!mb) return "—";
+  return (mb >= 1024 && mb % 1024 === 0) ? (mb / 1024) + " GB" : mb + " MB";
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  var d = new Date(iso);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function setManageMsg(el, text, ok) {
+  el.textContent = text || "";
+  el.classList.toggle("manage-msg--ok", !!ok && !!text);
+  el.classList.toggle("manage-msg--err", !ok && !!text);
+}
+
+// Fetch against a staff endpoint with the Bearer token attached.
+function staffFetch(base, path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {});
+  opts.headers["Authorization"] = "Bearer " + token;
+  return fetch(base + path, opts).then(function (resp) {
+    if (resp.status === 401) { handleAuthExpired(); throw new Error("auth-expired"); }
+    return resp;
+  });
+}
+
+// ── Admin pane: teacher accounts ──────────────────────────────────────────────
+function loadAdminUsers() {
+  return staffFetch(authApiBase(), "/auth/admin/users?role=faculty")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (data) {
+      var users = (data && data.users) || [];
+      adminUserList.innerHTML = users.length
+        ? users.map(function (u) {
+            return '<div class="staff-row">' +
+              '<div class="staff-row__main">' +
+                '<span class="staff-row__name">' + escHtml(u.full_name || u.username) + '</span>' +
+                '<span class="staff-row__sub">@' + escHtml(u.username) + ' · ' + escHtml(u.email) + '</span>' +
+              '</div>' +
+              '<div class="staff-row__meta">' + escHtml(u.role) +
+                '<span class="chip chip--muted">' + escHtml(fmtDate(u.created_at)) + '</span>' +
+              '</div>' +
+            '</div>';
+          }).join("")
+        : '<p class="staff-empty">No teacher accounts yet — create the first one above.</p>';
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      adminUserList.innerHTML =
+        '<p class="staff-empty">Could not load accounts — provisioning service unreachable?</p>';
+    });
+}
+
+function createTeacher(e) {
+  e.preventDefault();
+  setManageMsg(adminMsg, "", false);
+  var payload = {
+    full_name: auFullname.value.trim(),
+    username:  auUsername.value.trim(),
+    email:     auEmail.value.trim(),
+    password:  auPassword.value,
+    role:      "faculty",
+  };
+  if (!payload.full_name || !payload.username || !payload.email) {
+    setManageMsg(adminMsg, "All fields are required", false);
+    return;
+  }
+  if (payload.username.length < 4) {
+    setManageMsg(adminMsg, "Username must be at least 4 characters", false);
+    return;
+  }
+  if (payload.password.length < 8) {
+    setManageMsg(adminMsg, "Password must be at least 8 characters", false);
+    return;
+  }
+  setStatus("Creating teacher account…", false);
+  return staffFetch(authApiBase(), "/auth/admin/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (u) {
+    adminUserForm.reset();
+    setManageMsg(adminMsg, "Teacher @" + u.username + " created — share the credentials with them.", true);
+    setStatus("Ready", false);
+    loadAdminUsers();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setManageMsg(adminMsg, err.message || "Creation failed", false);
+    setStatus("Disconnected", false);
+  });
+}
+
+// ── Teacher pane: class pools ─────────────────────────────────────────────────
+function loadPoolTemplate() {
+  return staffFetch(provApiBase(), "/teacher/pool-template")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (t) {
+      document.getElementById("tp-spec-vcpus").textContent   = t.vcpus + " vCPU" + (t.vcpus === 1 ? "" : "s");
+      document.getElementById("tp-spec-ram").textContent     = fmtRam(t.ram_mb);
+      document.getElementById("tp-spec-disk").textContent    = t.disk_gb + " GB";
+      document.getElementById("tp-spec-session").textContent = t.max_session_minutes + " min per session";
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      // Spec stays "…" — the create form will surface the real error.
+    });
+}
+
+function loadTeacherPools() {
+  return staffFetch(provApiBase(), "/teacher/pools")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (data) {
+      var pools = (data && data.pools) || [];
+      teacherPoolList.innerHTML = pools.length
+        ? pools.map(function (p) {
+            var counts = [
+              p.ready_count + " ready",
+              p.in_use_count + " in use",
+              p.provisioning_count + " provisioning",
+            ].join(" · ");
+            var stateChip = (p.status === "active")
+              ? '<span class="chip chip--ok">' + escHtml(p.status) + '</span>'
+              : '<span class="chip chip--muted">' + escHtml(p.status) + '</span>';
+            return '<div class="staff-row">' +
+              '<div class="staff-row__main">' +
+                '<span class="staff-row__name">' + escHtml(p.name) + '</span>' +
+                '<span class="staff-row__sub">' + counts +
+                  ' · total ' + p.total_instances + "/" + p.max_vms + " VMs · created " +
+                  escHtml(fmtDate(p.created_at)) + '</span>' +
+              '</div>' +
+              '<div class="staff-row__meta">' + stateChip + '</div>' +
+            '</div>';
+          }).join("")
+        : '<p class="staff-empty">No class pools yet. Create one on the left — ' +
+          'provisioning takes a few minutes per VM. Access codes arrive with the next milestone.</p>';
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      teacherPoolList.innerHTML =
+        '<p class="staff-empty">Could not load pools — provisioning service unreachable?</p>';
+    });
+}
+
+function loadTeacherDashboard() {
+  loadPoolTemplate();
+  loadTeacherPools();
+}
+
+function createPool(e) {
+  e.preventDefault();
+  setManageMsg(poolCreateMsg, "", false);
+  var name  = tpName.value.trim();
+  var count = parseInt(tpCount.value, 10);
+  if (name.length < 3) {
+    setManageMsg(poolCreateMsg, "Pool name must be at least 3 characters", false);
+    return;
+  }
+  if (!count || count < 1 || count > 40) {
+    setManageMsg(poolCreateMsg, "VM count must be between 1 and 40", false);
+    return;
+  }
+  setStatus("Provisioning " + count + " VM(s)…", false);
+  return staffFetch(provApiBase(), "/teacher/pools", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name, vm_count: count }),
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function (pool) {
+    poolCreateForm.reset();
+    setManageMsg(poolCreateMsg, "Pool “" + pool.name + "” created — " +
+      pool.max_vms + " VM(s) are provisioning now and will appear below as they become ready (a few minutes each).", true);
+    setStatus("Ready", false);
+    loadTeacherPools();
+  }).catch(function (err) {
+    if (err && err.message === "auth-expired") return;
+    setManageMsg(poolCreateMsg, err.message || "Pool creation failed", false);
+    setStatus("Disconnected", false);
+  });
+}
+
+// Send the signed-in user to the workspace their role owns.
+function enterWorkspace() {
+  var role = tokenUser ? tokenUser.role : "";
+  if (role === "admin") {
+    setView("admin");
+    loadAdminUsers();
+  } else if (role === "faculty") {
+    setView("teacher");
+    loadTeacherDashboard();
+  } else {
+    setView("idle");
+  }
+}
+
 function login(username, password) {
   setStatus("Signing in…", false);
   return fetch(authApiBase() + "/auth/login", {
@@ -170,7 +412,7 @@ function login(username, password) {
       role: payload.role,
     });
     sessionEl.textContent = "Signed in as " + username;
-    setView("idle");
+    enterWorkspace();
     setStatus("Ready", false);
     loginForm.reset();
     loginError.textContent = "";
@@ -855,6 +1097,15 @@ connectBtn.addEventListener("click", connectUser);
 disconnectBtn.addEventListener("click", disconnect);
 logoutBtn.addEventListener("click", logout);
 
+// Staff dashboards
+adminUserForm.addEventListener("submit", createTeacher);
+adminRefreshBtn.addEventListener("click", function() { loadAdminUsers(); });
+poolCreateForm.addEventListener("submit", createPool);
+poolRefreshBtn.addEventListener("click", function() {
+  loadTeacherPools();
+  loadPoolTemplate();
+});
+
 // Window resize — covers drag-resize
 window.addEventListener("resize", onViewportResize);
 
@@ -884,6 +1135,23 @@ document.addEventListener("MSFullscreenChange",     onViewportResize);
       tokenUser = null;
     }
     sessionEl.textContent = "Signed in as " + (tokenUser ? tokenUser.username : "user");
+
+    var role = tokenUser ? tokenUser.role : "";
+    if (role === "admin") {
+      // Admin dashboard — account management, no RDP sessions.
+      setView("admin");
+      setStatus("Ready", false);
+      loadAdminUsers();
+      return;
+    }
+    if (role === "faculty") {
+      // Teacher dashboard — class pool management, no RDP sessions.
+      setView("teacher");
+      setStatus("Ready", false);
+      loadTeacherDashboard();
+      return;
+    }
+
     setView("idle");
     setStatus("Ready", false);
 

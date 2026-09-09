@@ -59,3 +59,19 @@ VM_BOOT_VOLUME_SIZE_GB = int(os.getenv("VM_BOOT_VOLUME_SIZE_GB", "10"))
 
 #Pool defaults
 DEFAULT_MAX_SESSION_MINUTES = int(os.getenv("DEFAULT_MAX_SESSION_MINUTES", "240"))
+
+#Teacher class-pool template (read-only spec shown to teachers).
+#Class pools are 'persistent' + access_mode 'code': instances live until the
+#teacher tears the class down, and are claimable only via access codes.
+#Image/flavor/network resolve from the reference pool (student-pool) unless
+#explicitly overridden here on the deploy host.
+TEACHER_REFERENCE_POOL   = os.getenv("TEACHER_REFERENCE_POOL",   "student-pool")
+TEACHER_IMAGE_ID         = os.getenv("TEACHER_IMAGE_ID",         "")
+TEACHER_FLAVOR_ID        = os.getenv("TEACHER_FLAVOR_ID",        "")
+TEACHER_NETWORK_ID       = os.getenv("TEACHER_NETWORK_ID",       "")
+TEACHER_MAX_SESSION_MINUTES = int(os.getenv("TEACHER_MAX_SESSION_MINUTES", "480"))
+TEACHER_VM_COUNT_LIMIT   = int(os.getenv("TEACHER_VM_COUNT_LIMIT", "40"))
+# Display fallbacks used only when Nova flavor metadata is unreachable.
+TEACHER_FALLBACK_VCPUS   = int(os.getenv("TEACHER_FALLBACK_VCPUS",   "2"))
+TEACHER_FALLBACK_RAM_MB  = int(os.getenv("TEACHER_FALLBACK_RAM_MB",  "4096"))
+TEACHER_FALLBACK_DISK_GB = int(os.getenv("TEACHER_FALLBACK_DISK_GB", "20"))

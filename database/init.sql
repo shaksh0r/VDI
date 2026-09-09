@@ -66,6 +66,14 @@ CREATE TYPE pool_status AS ENUM (
     'deleted'
 );
 
+-- Pool access mode
+--   'open' — claimable by any eligible role (legacy student pools)
+--   'code' — claimable only after presenting a valid class access code
+CREATE TYPE pool_access_mode AS ENUM (
+    'open',
+    'code'
+);
+
 -- Release reasons
 CREATE TYPE release_reason AS ENUM (
     'user_logout',
@@ -177,6 +185,7 @@ current_count INTEGER NOT NULL DEFAULT 0 CHECK (current_count >= 0),
 
 -- Pool Configuration
 desktop_type desktop_type NOT NULL,
+access_mode pool_access_mode NOT NULL DEFAULT 'open', -- 'open' | 'code' (code = class pool gated by access codes)
 auto_scaling_enabled BOOLEAN DEFAULT TRUE,
 status pool_status DEFAULT 'active',
 

@@ -9,6 +9,7 @@ class PoolResponse(BaseModel):
     pool_id: str
     name: str
     desktop_type: str
+    access_mode: str
     image_id: str
     flavor_id: str
     network_id: str
@@ -26,6 +27,46 @@ class PoolResponse(BaseModel):
 
 class PoolListResponse(BaseModel):
     pools: list[PoolResponse]
+    total: int
+
+
+class TeacherTemplateResponse(BaseModel):
+    """The fixed, read-only compute spec shown to teachers when they
+    create a class pool. Values are decided server-side."""
+
+    desktop_type: str
+    access_mode: str
+    image_id: str
+    flavor_id: str
+    network_id: str
+    security_group: str
+    vcpus: Optional[int] = None
+    ram_mb: Optional[int] = None
+    disk_gb: Optional[int] = None
+    max_session_minutes: int
+    fixed: bool = True
+    note: str = "VM specification is fixed by the platform administrator"
+
+
+class TeacherPoolSummary(BaseModel):
+    pool_id: str
+    name: str
+    status: str
+    desktop_type: str
+    access_mode: str
+    min_vms: int
+    max_vms: int
+    current_count: int
+    max_session_minutes: int
+    created_at: datetime
+    ready_count: int = 0
+    in_use_count: int = 0
+    provisioning_count: int = 0
+    total_instances: int = 0
+
+
+class TeacherPoolListResponse(BaseModel):
+    pools: list[TeacherPoolSummary]
     total: int
 
 

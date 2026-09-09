@@ -140,6 +140,88 @@
         </div>
       </div>
 
+      <!-- Admin state — account management (role 'admin' only) -->
+      <div class="manage-state" id="admin-pane" style="display: none;">
+        <div class="manage-state__wrap">
+          <div class="manage-card">
+            <p class="manage-card__title">Create a teacher account</p>
+            <form class="login-state__form" id="admin-user-form">
+              <input id="au-fullname" type="text" placeholder="Full name"
+                     autocomplete="off" required />
+              <div class="form-row">
+                <input id="au-username" type="text" placeholder="Username (min 4)"
+                       autocomplete="off" autocapitalize="none" required />
+                <input id="au-email" type="email" placeholder="Email"
+                       autocomplete="off" autocapitalize="none" required />
+              </div>
+              <input id="au-password" type="password" placeholder="Temporary password (min 8)"
+                     autocomplete="new-password" required />
+              <p class="form-hint">Teacher accounts are created by an administrator only —
+                public self-registration stays open to students only.</p>
+              <button type="submit" class="btn btn--connect">Create teacher account</button>
+            </form>
+            <p class="manage-msg" id="admin-msg"></p>
+          </div>
+
+          <div class="manage-card">
+            <div class="manage-card__head">
+              <p class="manage-card__title">Teacher accounts</p>
+              <button type="button" class="btn btn--ghost" id="admin-refresh">Refresh</button>
+            </div>
+            <div class="staff-list" id="admin-user-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Teacher state — class pool management (role 'faculty' only) -->
+      <div class="manage-state" id="teacher-pane" style="display: none;">
+        <div class="manage-state__wrap manage-state__wrap--split">
+          <div class="manage-card">
+            <p class="manage-card__title">New class pool</p>
+            <form class="login-state__form" id="pool-create-form">
+              <input id="tp-name" type="text" placeholder="Class pool name (e.g. cse450-lab1)"
+                     autocomplete="off" required />
+              <input id="tp-count" type="number" min="1" max="40" step="1"
+                     placeholder="Number of VMs" required />
+              <div class="spec-card">
+                <p class="spec-card__title">Fixed VM specification</p>
+                <div class="spec-row">
+                  <span class="spec-row__key">vCPUs</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-vcpus">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">RAM</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-ram">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Boot disk</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-disk">…</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Lifecycle</span>
+                  <span class="spec-row__val">Reserved — VM survives disconnects until you tear the class down</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Session limit</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-session">…</span>
+                </div>
+                <p class="spec-card__note">Configuration is fixed and cannot be changed.</p>
+              </div>
+              <button type="submit" class="btn btn--connect">Create pool &amp; provision VMs</button>
+            </form>
+            <p class="manage-msg" id="pool-create-msg"></p>
+          </div>
+
+          <div class="manage-card">
+            <div class="manage-card__head">
+              <p class="manage-card__title">My class pools</p>
+              <button type="button" class="btn btn--ghost" id="pool-refresh">Refresh</button>
+            </div>
+            <div class="staff-list" id="teacher-pool-list"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Idle state — logged in, no active session -->
       <div class="idle-state" id="placeholder">
         <div class="idle-state__glyph">

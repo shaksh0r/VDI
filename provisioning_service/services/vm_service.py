@@ -41,10 +41,14 @@ def _claim_response(row) -> VMClaimResponse:
 
 
 async def _candidate_pools(conn, role: str, pool_id=None, pool_type=None):
+    # Only 'open' pools are reachable via the plain claim path. 'code'
+    # pools (class pools) are claimable exclusively through the access-code
+    # flow, which resolves the pool server-side from a validated code.
     query = """
         SELECT * FROM desktop_pools
         WHERE deleted_at IS NULL
           AND status = 'active'
+          AND access_mode = 'open'
           AND $1::user_role = ANY(allowed_roles)
     """
     params = [role]

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
-from .api import admin, pools, vms
+from .api import admin, pools, teachers, vms
 from .db import create_database_pool
 from .openstack import OpenStackClient
 
@@ -81,6 +81,7 @@ app.add_middleware(
 )
 
 app.include_router(pools.router)
+app.include_router(teachers.router)
 app.include_router(vms.router)
 app.include_router(admin.router)
 
