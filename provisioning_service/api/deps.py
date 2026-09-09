@@ -6,9 +6,9 @@ import httpx
 from fastapi import Depends, Header, HTTPException, status
 
 from .. import config
-from ..db import get_db
+from ..db import get_db, get_pool
 
-__all__ = ["get_db", "get_current_user", "require_roles"]
+__all__ = ["get_db", "get_pool", "get_current_user", "require_roles"]
 
 
 async def get_current_user(

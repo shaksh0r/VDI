@@ -7,7 +7,7 @@ from ..message_queue.celery_app import app
 from ..models.requests import VMReleaseRequest, VMRequestRequest
 from ..models.responses import VMClaimResponse, VMStatusResponse
 from ..services import pool_service, vm_service
-from .deps import get_current_user, get_db, require_roles
+from .deps import get_current_user, get_db, get_pool, require_roles
 
 router = APIRouter(prefix="/provision", tags=["vms"])
 
@@ -21,11 +21,11 @@ class PoolExpandRequest(BaseModel):
 async def connect(
     request: VMRequestRequest,
     user: dict = Depends(get_current_user),
-    conn=Depends(get_db),
+    pool=Depends(get_pool),
 ):
     try:
         return await vm_service.claim_vm(
-            conn,
+            pool,
             user["user_id"],
             user["role"],
             pool_id=request.pool_id,

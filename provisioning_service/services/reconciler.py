@@ -34,6 +34,57 @@ async def _expire_sessions_async() -> None:
             )
             for row in rows:
                 await release_vm(conn, row["user_id"], "session_expired")
+
+            # ── Heal orphaned 'in_use' instances ──────────────────────────
+            # An instance can remain 'in_use' with no owner when its
+            # assignment row disappears without a release (e.g. the owning
+            # user row was hard-deleted and user_assignments cascaded away).
+            # Such an instance is unclaimable and occupies a pool slot
+            # forever (replenish is capped by current_count). Treat it like
+            # an abandoned session: destroy non-persistent VMs (normal
+            # release semantics), return persistent ones to ready.
+            orphans = await conn.fetch(
+                """
+                SELECT i.instance_id, i.pool_id, p.desktop_type
+                FROM desktop_instances i
+                JOIN desktop_pools p ON p.pool_id = i.pool_id
+                WHERE i.status = 'in_use'
+                  AND i.assigned_user_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM user_assignments ua
+                      WHERE ua.instance_id = i.instance_id
+                        AND ua.released_at IS NULL
+                  )
+                """
+            )
+            for orphan in orphans:
+                if orphan["desktop_type"] == "non_persistent":
+                    job_id = await conn.fetchval(
+                        """
+                        INSERT INTO provisioning_jobs (pool_id, instance_id, job_type)
+                        VALUES ($1, $2, 'delete_vm')
+                        RETURNING job_id
+                        """,
+                        orphan["pool_id"], orphan["instance_id"],
+                    )
+                    app.send_task(
+                        "provisioning_service.services.job_worker.delete_vm_task",
+                        args=[str(orphan["instance_id"]), str(job_id)],
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE desktop_instances
+                        SET status = 'ready', assigned_user_id = NULL,
+                            assigned_at = NULL, updated_at = NOW()
+                        WHERE instance_id = $1
+                        """,
+                        orphan["instance_id"],
+                    )
+                logger.info(
+                    "healed orphaned in_use instance %s (type=%s)",
+                    orphan["instance_id"], orphan["desktop_type"],
+                )
     finally:
         if pool is not None:
             await pool.close()

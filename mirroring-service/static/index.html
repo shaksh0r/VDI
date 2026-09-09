@@ -92,7 +92,7 @@
     ════════════════════════════════════════════════════ -->
     <main class="viewport" id="viewport">
 
-      <!-- Login state — shown when not signed in (visibility via setView) -->
+      <!-- Auth state — shown when not signed in (visibility via setView) -->
       <div class="login-state" id="login">
         <div class="login-state__card">
           <p class="login-state__heading">Sign in to VDI</p>
@@ -104,6 +104,39 @@
             <button type="submit" class="btn btn--connect">Sign in</button>
           </form>
           <p class="login-state__error" id="login-error"></p>
+          <p class="auth-switch">
+            Don't have an account?
+            <button type="button" class="auth-switch__btn" id="show-signup">Create one</button>
+          </p>
+        </div>
+      </div>
+
+      <!-- Signup state — student self-registration (toggled from login) -->
+      <div class="login-state" id="signup" style="display: none;">
+        <div class="login-state__card login-state__card--wide">
+          <p class="login-state__heading">Create your account</p>
+          <form class="login-state__form" id="signup-form">
+            <input id="reg-name" type="text" placeholder="Full name"
+                   autocomplete="name" required />
+            <input id="reg-email" type="email" placeholder="Email"
+                   autocomplete="email" autocapitalize="none" required />
+            <div class="form-row">
+              <input id="reg-sid" type="text" placeholder="Student ID" required />
+              <input id="reg-dept" type="text" placeholder="Department" required />
+            </div>
+            <input id="reg-username" type="text" placeholder="Username"
+                   autocomplete="username" autocapitalize="none" required />
+            <input id="reg-password" type="password" placeholder="Password (min 8 chars)"
+                   autocomplete="new-password" required />
+            <input id="reg-password2" type="password" placeholder="Confirm password"
+                   autocomplete="new-password" required />
+            <button type="submit" class="btn btn--connect">Create account</button>
+          </form>
+          <p class="login-state__error" id="signup-error"></p>
+          <p class="auth-switch">
+            Already have an account?
+            <button type="button" class="auth-switch__btn" id="show-login">Sign in</button>
+          </p>
         </div>
       </div>
 

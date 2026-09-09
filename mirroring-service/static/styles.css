@@ -663,3 +663,42 @@ body.is-connected .chrome__session-dot {
   border-color: var(--c-line-2);
   color: var(--c-text-1);
 }
+
+/* ─── Signup card & auth pane toggle ─────────────────────────────── */
+.login-state__card--wide {
+  width: min(380px, calc(100% - 48px));
+}
+
+.login-state__form .form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.login-state__form .form-row > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--c-text-4);
+  text-align: center;
+}
+
+.auth-switch__btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--c-accent-hi);
+  font-family: var(--f-ui);
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.auth-switch__btn:hover {
+  text-decoration: underline;
+}

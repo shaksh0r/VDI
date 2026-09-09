@@ -106,26 +106,36 @@ async def _try_claim(conn, user_id, pool_ids):
 
 
 async def claim_vm(
-    conn,
+    pool,
     user_id,
     role: str,
     pool_id=None,
     pool_type=None,
 ) -> VMClaimResponse:
-    active = await _find_active_assignment(conn, user_id)
-    if active is not None:
-        return _claim_response(active)
+    """Claim a VM for a user.
 
-    pools = await _candidate_pools(conn, role, pool_id, pool_type)
-    if not pools:
-        if pool_id:
-            raise ValueError("pool not found or not allowed for your role")
-        raise ValueError("no pool available for your role")
-    pool_ids = [pool["pool_id"] for pool in pools]
+    `pool` is the asyncpg pool, NOT a checked-out connection: the claim
+    wait loop can poll for CLAIM_QUEUE_TIMEOUT_SECONDS, and holding a
+    pooled connection for the whole duration would exhaust the pool once
+    several students wait concurrently. Each attempt acquires and releases
+    a connection of its own.
+    """
+    async with pool.acquire() as conn:
+        active = await _find_active_assignment(conn, user_id)
+        if active is not None:
+            return _claim_response(active)
+
+        pools = await _candidate_pools(conn, role, pool_id, pool_type)
+        if not pools:
+            if pool_id:
+                raise ValueError("pool not found or not allowed for your role")
+            raise ValueError("no pool available for your role")
+    pool_ids = [pool_row["pool_id"] for pool_row in pools]
 
     deadline = time.time() + config.CLAIM_QUEUE_TIMEOUT_SECONDS
     while True:
-        claimed = await _try_claim(conn, user_id, pool_ids)
+        async with pool.acquire() as conn:
+            claimed = await _try_claim(conn, user_id, pool_ids)
         if claimed is not None:
             return _claim_response(claimed)
         if time.time() >= deadline:

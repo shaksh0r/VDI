@@ -22,3 +22,15 @@ async def create_database_pool(
 async def get_db(request: Request):
     async with request.app.state.db_pool.acquire() as conn:
         yield conn
+
+
+async def get_pool(request: Request):
+    """Yield the asyncpg pool itself (not a checked-out connection).
+
+    Long operations (e.g. the claim wait loop, which polls for up to
+    CLAIM_QUEUE_TIMEOUT_SECONDS) must not hold a pooled connection for
+    their whole duration — that ties up pool slots and can exhaust the
+    pool when many students wait concurrently. These should acquire a
+    connection per attempt instead.
+    """
+    yield request.app.state.db_pool

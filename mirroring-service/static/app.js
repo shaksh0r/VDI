@@ -48,6 +48,20 @@ var loginPass     = document.getElementById("login-password");
 var loginError    = document.getElementById("login-error");
 var countdownEl   = document.getElementById("sb-session");
 
+// ── Signup pane refs ──────────────────────────────────────────────────────────
+var signupEl      = document.getElementById("signup");
+var signupForm    = document.getElementById("signup-form");
+var signupError   = document.getElementById("signup-error");
+var regName       = document.getElementById("reg-name");
+var regEmail      = document.getElementById("reg-email");
+var regSid        = document.getElementById("reg-sid");
+var regDept       = document.getElementById("reg-dept");
+var regUser       = document.getElementById("reg-username");
+var regPass       = document.getElementById("reg-password");
+var regPass2      = document.getElementById("reg-password2");
+var showSignupBtn = document.getElementById("show-signup");
+var showLoginBtn  = document.getElementById("show-login");
+
 var client   = null;
 var keyboard = null;
 var mouse    = null;
@@ -80,6 +94,16 @@ function setStatus(text, ok) {
   document.body.classList.toggle("is-connected", !!ok);
 }
 
+// Which auth pane is open ("login" | "signup") — used when the auth view
+// is shown again (logout, expired token, first load).
+var authPane = "login";
+
+function showAuthPane(pane) {
+  authPane = (pane === "signup") ? "signup" : "login";
+  loginEl.style.display  = (authPane === "login")  ? "flex" : "none";
+  signupEl.style.display = (authPane === "signup") ? "flex" : "none";
+}
+
 function setView(mode) {
   // mode: "login" | "idle" | "connected"
   // Explicit display values (never "") so inline styles always win over
@@ -89,7 +113,12 @@ function setView(mode) {
   var showIdle  = (mode === "idle");
   var showDisp  = (mode === "connected");
 
-  loginEl.style.display       = showLogin ? "flex"  : "none";
+  if (showLogin) {
+    showAuthPane(authPane);
+  } else {
+    loginEl.style.display  = "none";
+    signupEl.style.display = "none";
+  }
   placeholderEl.style.display = showIdle  ? "flex"  : "none";
   displayEl.style.display     = showDisp  ? "block" : "none";
   logoutBtn.style.display     = showLogin ? "none"  : "inline-flex";
@@ -113,7 +142,15 @@ function setToken(value, user) {
 
 function apiError(resp) {
   return resp.json()
-    .then(function (d) { return (d && d.detail) || ("HTTP " + resp.status); })
+    .then(function (d) {
+      if (d && Array.isArray(d.detail)) {
+        // FastAPI 422 validation errors: detail is a list of {loc,msg,type}
+        return d.detail.map(function (x) { return x.msg || ""; })
+                      .filter(Boolean)
+                      .join("; ");
+      }
+      return (d && d.detail) || ("HTTP " + resp.status);
+    })
     .catch(function () { return "HTTP " + resp.status; });
 }
 
@@ -145,17 +182,92 @@ function login(username, password) {
   });
 }
 
+function register() {
+  // Student self-registration → auth-service /auth/signup, then auto sign-in.
+  setStatus("Creating account…", false);
+  signupError.textContent = "";
+
+  var registered = false;   // signup succeeded (auto sign-in may still fail)
+
+  var payload = {
+    full_name:   regName.value.trim(),
+    email:       regEmail.value.trim(),
+    student_id:  regSid.value.trim(),
+    department:  regDept.value.trim(),
+    username:    regUser.value.trim(),
+    password:    regPass.value,
+  };
+
+  // Client-side checks (server enforces the rest)
+  if (payload.username.length < 4) {
+    signupError.textContent = "Username must be at least 4 characters";
+    setStatus("Disconnected", false);
+    return Promise.reject(new Error("validation"));
+  }
+  if (payload.password.length < 8) {
+    signupError.textContent = "Password must be at least 8 characters";
+    setStatus("Disconnected", false);
+    return Promise.reject(new Error("validation"));
+  }
+  if (payload.password !== regPass2.value) {
+    signupError.textContent = "Passwords do not match";
+    setStatus("Disconnected", false);
+    return Promise.reject(new Error("validation"));
+  }
+
+  return fetch(authApiBase() + "/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then(function (resp) {
+    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    return resp.json();
+  }).then(function () {
+    signupForm.reset();
+    registered = true;
+    // Account created — sign the student straight in.
+    return login(payload.username, payload.password);
+  }).then(function () {
+    return true;  // fully signed in (login() switched to the idle view)
+  }).catch(function (err) {
+    if (err && err.message === "validation") return;
+    if (registered) {
+      // Account exists; only the auto sign-in failed — hand over to login.
+      signupError.textContent = "";
+      showAuthPane("login");
+      loginError.textContent = "Account created — please sign in to continue.";
+      setStatus("Disconnected", false);
+      return;
+    }
+    signupError.textContent = err.message || "Registration failed";
+    setStatus("Disconnected", false);
+    throw err;
+  });
+}
+
 function logout() {
   manualDisconnect = true;
   stopPolling();
   cancelReconnect();
+  cancelClaimRetry();
   if (client) { client.disconnect(); client = null; }
   detachInputHandlers();
   displayEl.innerHTML = "";
+
+  // Release any active VM BEFORE the token is cleared — signing out must
+  // not leave the pool slot occupied for the whole session duration.
+  releaseAssignment().then(function (out) {
+    if (out && out.error) {
+      setStatus("Signed out — but VM release failed (" + out.error + ")", false);
+      sessionEl.textContent = "Sign out: VM release failed — it will expire later";
+    }
+  });
+
   activeSession = null;
   expiresAt = null;
   setToken(null, null);
   sessionEl.textContent = "Not signed in";
+  showAuthPane("login");
   setView("login");
   setStatus("Disconnected", false);
 }
@@ -164,6 +276,7 @@ function handleAuthExpired() {
   // 401 from any authenticated call — the token is gone/expired.
   stopPolling();
   cancelReconnect();
+  cancelClaimRetry();
   if (client) { client.disconnect(); client = null; }
   detachInputHandlers();
   displayEl.innerHTML = "";
@@ -171,6 +284,7 @@ function handleAuthExpired() {
   expiresAt = null;
   setToken(null, null);
   sessionEl.textContent = "Not signed in";
+  showAuthPane("login");
   setView("login");
   setStatus("Session expired — sign in again", false);
   loginError.textContent = "Your session expired. Please sign in again.";
@@ -180,8 +294,9 @@ function handleAuthExpired() {
 function connect() {
   if (!token) { setView("login"); return; }
   manualDisconnect = false;
+  cancelClaimRetry();
   cancelReconnect();
-  setStatus("Allocating VM…", false);
+  setStatus("Requesting a VM…", false);
 
   return fetch(provApiBase() + "/provision/connect", {
     method: "POST",
@@ -192,7 +307,11 @@ function connect() {
     body: JSON.stringify({ pool_type: "non_persistent" }),
   }).then(function (resp) {
     if (resp.status === 401) { handleAuthExpired(); throw new Error("auth"); }
-    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    if (!resp.ok) return apiError(resp).then(function (m) {
+      var err = new Error(m);
+      err.status = resp.status;
+      throw err;
+    });
     return resp.json();
   }).then(function (payload) {
     activeSession = {
@@ -207,9 +326,43 @@ function connect() {
     _doConnect();
   }).catch(function (err) {
     if (err && err.message === "auth") return;
+    if (err && err.status === 503) {
+      // Pool is empty (claim waited and timed out server-side) — show a
+      // message and auto-retry until a VM becomes available.
+      sessionEl.textContent = "No VMs available right now";
+      setStatus("No VMs available — will retry automatically…", false);
+      scheduleClaimRetry();
+      return;
+    }
     sessionEl.textContent = "No session assigned.";
     setStatus((err && err.message) || "Connection error", false);
   });
+}
+
+// ── Empty-pool auto-retry ─────────────────────────────────────────────────────
+// The provisioning API holds a claim for ~60 s (waiting for a mid-provision
+// VM to become ready), then answers 503. Instead of making the student
+// click Connect repeatedly, keep retrying in the background and connect the
+// moment a VM is free.
+var claimRetryTimer = null;
+var waitingForVm    = false;
+
+function scheduleClaimRetry() {
+  cancelClaimRetry();
+  waitingForVm = true;
+  claimRetryTimer = setInterval(function () {
+    if (!token || manualDisconnect) { cancelClaimRetry(); return; }
+    setStatus("Still waiting for a free VM…", false);
+    connect();  // handles success / further 503s itself
+  }, 30000);
+}
+
+function cancelClaimRetry() {
+  waitingForVm = false;
+  if (claimRetryTimer) {
+    clearInterval(claimRetryTimer);
+    claimRetryTimer = null;
+  }
 }
 
 // ── Guacamole instruction parser ──────────────────────────────────────────────
@@ -457,6 +610,7 @@ function updateCountdown() {
 function handleSessionEnded() {
   stopPolling();
   cancelReconnect();
+  cancelClaimRetry();
   if (client) { client.disconnect(); client = null; }
   detachInputHandlers();
   displayEl.innerHTML = "";
@@ -584,25 +738,71 @@ function connectUser() {
 }
 
 
+// ── Release (shared by Disconnect & Sign out) ─────────────────────────────────
+// The release call is the ONLY thing that frees the pool slot. It used to
+// be fire-and-forget and skipped entirely when the in-memory session was
+// lost (page reload) or when signing out — leaving the VM locked for the
+// full session duration while everyone else saw "No VMs available".
+// Now: posts /provision/disconnect whenever an assignment exists (checked
+// via /provision/status if the in-memory state is gone), retries once on
+// network failure, and reports the outcome to the caller. Never throws.
+function releaseAssignment() {
+  var authToken = token;
+  var session   = activeSession;
+  if (!authToken) return Promise.resolve({ released: false });
+
+  function doPost() {
+    return fetch(provApiBase() + "/provision/disconnect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + authToken,
+      },
+      body: JSON.stringify({ reason: "user_logout" }),
+    }).then(function (resp) {
+      if (resp.status === 200) return { released: true };
+      return { error: "HTTP " + resp.status };
+    });
+  }
+
+  function attempt() {
+    if (session) return doPost();
+    // Session state lost (reload) — check whether an assignment exists.
+    return fetch(provApiBase() + "/provision/status", {
+      headers: { "Authorization": "Bearer " + authToken },
+    }).then(function (resp) {
+      if (resp.status === 401) return { error: "auth expired" };
+      return resp.json();
+    }).then(function (st) {
+      if (st && st.has_assignment) return doPost();
+      return { released: false };
+    });
+  }
+
+  return attempt().catch(function () {
+    // One retry after a short delay (transient network/server blip).
+    return new Promise(function (resolve) { setTimeout(resolve, 4000); })
+      .then(attempt)
+      .catch(function () { return { error: "network" }; });
+  });
+}
+
+
 // ── Disconnect (user-initiated) ───────────────────────────────────────────────
 function disconnect() {
   manualDisconnect = true;
+  cancelClaimRetry();
   cancelReconnect();
   stopPolling();
 
   // Release the VM on the provisioning side (non-persistent: it gets
-  // deleted and the pool replenishes). Fire-and-forget: the local UI
-  // teardown must not depend on this call succeeding.
-  if (token && activeSession) {
-    fetch(provApiBase() + "/provision/disconnect", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer " + token,
-      },
-      body: JSON.stringify({ reason: "user_logout" }),
-    }).catch(function () {});
-  }
+  // deleted and the pool replenishes). Local teardown does not depend on
+  // the call, but a failure is surfaced instead of being swallowed.
+  releaseAssignment().then(function (out) {
+    if (out && out.error) {
+      setStatus("Release failed (" + out.error + ") — VM may stay occupied", false);
+    }
+  });
 
   if (client) { client.disconnect(); client = null; }
   detachInputHandlers();
@@ -630,6 +830,25 @@ loginForm.addEventListener("submit", function(e) {
   e.preventDefault();
   loginError.textContent = "";
   login(loginUser.value.trim(), loginPass.value).catch(function() {});
+});
+
+signupForm.addEventListener("submit", function(e) {
+  e.preventDefault();
+  signupError.textContent = "";
+  register().catch(function() {});
+});
+
+showSignupBtn.addEventListener("click", function() {
+  loginError.textContent = "";
+  signupError.textContent = "";
+  signupForm.reset();
+  showAuthPane("signup");
+});
+
+showLoginBtn.addEventListener("click", function() {
+  loginError.textContent = "";
+  signupError.textContent = "";
+  showAuthPane("login");
 });
 
 connectBtn.addEventListener("click", connectUser);
@@ -667,6 +886,27 @@ document.addEventListener("MSFullscreenChange",     onViewportResize);
     sessionEl.textContent = "Signed in as " + (tokenUser ? tokenUser.username : "user");
     setView("idle");
     setStatus("Ready", false);
+
+    // A previous session may still be active server-side (page reload,
+    // tab closed without Disconnect). Surface it so the student can
+    // resume it or release it — otherwise the VM silently stays occupied
+    // and other students get "No VMs available".
+    fetch(provApiBase() + "/provision/status", {
+      headers: { "Authorization": "Bearer " + token },
+    }).then(function (resp) {
+      if (resp.status === 401) { handleAuthExpired(); return null; }
+      return resp.json();
+    }).then(function (st) {
+      if (!st || !st.has_assignment) return;
+      activeSession = {
+        instance_id: st.instance_id,
+        floating_ip: st.floating_ip,
+        pool_name:   st.pool_name,
+      };
+      sessionEl.textContent = "Session active @ " + (st.floating_ip || "…");
+      setStatus("Session active — Disconnect to release, or Connect to resume", false);
+      disconnectBtn.disabled = false;
+    }).catch(function () { /* provisioning unreachable — keep idle state */ });
   } else {
     sessionEl.textContent = "Not signed in";
     setView("login");

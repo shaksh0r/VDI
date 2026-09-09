@@ -20,3 +20,4 @@ vm-connect.txt
 seed_auth_tests.sql
 .reasonix
 celerybeat-schedule
+.dhome
