@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 
 import httpx
@@ -13,6 +14,8 @@ from ..openstack import OpenStackClient
 from ..openstack import neutron
 from ..openstack import nova
 from ..openstack.errors import OpenStackError
+
+logger = logging.getLogger(__name__)
 
 
 class _PermanentFailure(Exception):
