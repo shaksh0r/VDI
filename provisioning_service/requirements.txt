@@ -6,3 +6,5 @@ python-dotenv>=1.0
 pydantic>=2.7
 celery
 bcrypt
+prometheus-fastapi-instrumentator>=7.0
+prometheus-client>=0.20

@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Logging
@@ -498,6 +499,17 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# ─────────────────────────────────────────────────────────────────────────────
+#  Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Exposes /metrics in Prometheus text format. The dashboard's up/down signal
+# is Prometheus' own `up` series (1 when this endpoint scrapes cleanly), so
+# the service needs no health metric of its own. Request counters and
+# latency histograms come along for free and are there when we need them.
+Instrumentator().instrument(app).expose(
+    app, endpoint="/metrics", include_in_schema=False
+)
 
 
 @app.get("/")

@@ -1,0 +1,30 @@
+# Prometheus scrape configuration for the VDI stack.
+#
+# Both services expose /metrics via prometheus-fastapi-instrumentator. The
+# built-in `up` series is what the Grafana dashboard reads: Prometheus sets
+# up=1 when a scrape succeeds and up=0 when it fails (connection refused,
+# timeout, unparseable body), so "is the service up?" needs no application
+# metric of its own.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: provisioning
+    static_configs:
+      - targets: ["provisioning-server:8001"]
+        labels:
+          service: provisioning
+
+  - job_name: mirroring
+    static_configs:
+      - targets: ["mirroring:8000"]
+        labels:
+          service: mirroring
+

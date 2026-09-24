@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
-from . import config
+from . import config, metrics
 from .api import admin, admin_vms, pools, teachers, vms
 from .db import create_database_pool
 from .openstack import OpenStackClient
@@ -43,6 +45,9 @@ async def lifespan(app: FastAPI):
     logger.info("OpenStack client created (compute=%s, network=%s)",
                 config.OPENSTACK_COMPUTE_URL, config.OPENSTACK_NETWORK_URL)
 
+    app.state.metrics_task = asyncio.create_task(
+        metrics.refresh_loop(app.state.db_pool)
+    )
     #TODO: Background tasks will be started here in later:
     # app.state.reconciler_task = asyncio.create_task(reconciler_loop(app))
     # app.state.worker_task = asyncio.create_task(job_worker_loop(app))
@@ -50,6 +55,11 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down provisioning service…")
+    app.state.metrics_task.cancel()
+    try:
+        await app.state.metrics_task
+    except asyncio.CancelledError:
+        pass
 
     #TODO: Cancel background tasks
     # ...
@@ -85,6 +95,17 @@ app.include_router(teachers.router)
 app.include_router(vms.router)
 app.include_router(admin.router)
 app.include_router(admin_vms.router)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Exposes /metrics in Prometheus text format. The dashboard's up/down signal
+# is Prometheus' own `up` series (1 when this endpoint scrapes cleanly), so
+# the service needs no health metric of its own. Request counters and
+# latency histograms come along for free and are there when we need them.
+Instrumentator().instrument(app).expose(
+    app, endpoint="/metrics", include_in_schema=False
+)
 
 
 
