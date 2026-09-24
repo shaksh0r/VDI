@@ -243,8 +243,9 @@ CREATE TABLE pool_access_codes (
     redeemed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
     redeemed_at TIMESTAMP,
     revoked_at TIMESTAMP, -- teacher/admin revoked: no longer redeemable
-    affinity_instance_id UUID REFERENCES desktop_instances(instance_id)
-        ON DELETE SET NULL, -- VM reserved for this code (one-to-one)
+    -- FK to desktop_instances is added by ALTER TABLE below: that table is
+    -- created after this one, so the reference cannot be inline.
+    affinity_instance_id UUID, -- VM reserved for this code (one-to-one)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -303,6 +304,13 @@ CONSTRAINT check_vcpus_positive CHECK (vcpus > 0 OR vcpus IS NULL),
     CONSTRAINT check_disk_positive CHECK (disk_gb > 0 OR disk_gb IS NULL),
     CONSTRAINT check_health_failures CHECK (health_check_failures >= 0)
 );
+
+-- Deferred FK for pool_access_codes.affinity_instance_id: pool_access_codes
+-- is created earlier in this file, before desktop_instances exists.
+ALTER TABLE pool_access_codes
+    ADD CONSTRAINT fk_pool_codes_affinity_instance
+    FOREIGN KEY (affinity_instance_id) REFERENCES desktop_instances(instance_id)
+    ON DELETE SET NULL;
 
 -- Indexes for desktop_instances
 CREATE INDEX idx_instances_pool_id ON desktop_instances (pool_id);
@@ -1079,7 +1087,9 @@ INSERT INTO
 VALUES (
         'admin',
         'admin@buet.ac.bd',
-        '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5F7w7P3kXZX.i', -- bcrypt hash of 'admin123'
+        '$2b$12$bHh.z7neYefFRcBEs27qQe5OUOn.FypmRPDC67zj.xczNuuM//Wdi', -- bcrypt(sha256('admin123')) — auth-service pre-hashes
+        -- with sha256 before bcrypt (_hash_password in server.py), so a
+        -- plain bcrypt('admin123') hash can never validate.
         'System Administrator',
         'admin',
         TRUE,

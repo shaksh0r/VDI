@@ -106,6 +106,7 @@ services:
       dockerfile: Dockerfile
       network: host
     container_name: auth-service
+    env_file: ./auth-service/.env
     networks:
       - app_net
     environment:
