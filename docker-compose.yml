@@ -282,6 +282,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Celery task metrics ───────────────────────────────────────────────────
+  # Consumes the worker's task-event stream off the broker and turns it into
+  # Prometheus metrics. Requires worker_send_task_events / task_send_sent_event
+  # in celery_app.py — without those it reports nothing.
+  celery-exporter:
+    image: danihodovic/celery-exporter:0.11.3
+    container_name: celery-exporter
+    command: --broker-url=pyamqp://guest:guest@rabbitmq:5672//
+    networks:
+      - app_net
+    ports:
+      - "9808:9808"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
 networks:
   app_net:
     driver: bridge

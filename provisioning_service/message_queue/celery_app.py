@@ -25,4 +25,9 @@ app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    # Task events are off by default. celery-exporter builds every task
+    # metric from this event stream, so without these two the exporter
+    # connects happily and reports nothing at all.
+    worker_send_task_events=True,   # worker emits started/succeeded/failed
+    task_send_sent_event=True,      # producer emits task-sent
 )

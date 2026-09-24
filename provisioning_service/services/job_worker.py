@@ -54,6 +54,27 @@ async def _fail_job(conn, job_id: str, message: str, details=None) -> None:
         json.dumps(details or {}),
         job_id,
     )
+    # Fail the instance alongside the job. create_vm_task inserts the
+    # desktop_instances row before calling Nova, so a rejection there (quota
+    # exceeded, bad flavor, no valid host) leaves a row with no
+    # openstack_vm_id that nothing will ever advance: the job is 'failed'
+    # but the instance reads 'provisioning' forever, looks like a VM that is
+    # merely slow, and keeps counting against the pool's max_vms.
+    #
+    # Scoped to instances still mid-build so a job failing after the VM is
+    # live (e.g. a delete_vm that could not reach Nova) does not relabel a
+    # working desktop, and an already-deleted row is left alone.
+    await conn.execute(
+        """
+        UPDATE desktop_instances
+        SET status = 'error', updated_at = NOW()
+        WHERE instance_id = (
+                  SELECT instance_id FROM provisioning_jobs WHERE job_id = $1
+              )
+          AND status = 'provisioning'
+        """,
+        job_id,
+    )
 
 
 async def _handle_task_error(task, conn, job_id: str, exc: Exception) -> bool:

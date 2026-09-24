@@ -133,8 +133,23 @@ async def _refresh_once(pool) -> None:
     pool_names = [r["name"] for r in pools]
     vdi_pools_total.set(len(pool_names))
 
-    # Zero-fill first so states that disappeared since the last cycle drop
-    # back to 0 instead of holding their old value forever.
+    # Drop every pool-labelled series before rebuilding. Zero-filling alone
+    # only covers labels we still know about: when a pool is deleted it
+    # leaves pool_names and its series would otherwise keep reporting the
+    # values it had at deletion, forever. clear() removes the children so a
+    # vanished pool vanishes from /metrics too.
+    #
+    # Safe to do here: every query above has already returned, and nothing
+    # between this point and the end of the function awaits, so no scrape
+    # can observe the gap on this event loop.
+    vdi_instances.clear()
+    vdi_pool_capacity.clear()
+    vdi_pool_usable.clear()
+    vdi_active_assignments.clear()
+    vdi_access_codes.clear()
+
+    # Zero-fill so states that exist but are currently empty report 0
+    # rather than disappearing.
     for name in pool_names:
         for status in INSTANCE_STATUSES:
             vdi_instances.labels(pool=name, status=status).set(0)
