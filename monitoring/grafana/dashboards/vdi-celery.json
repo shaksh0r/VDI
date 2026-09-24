@@ -31,7 +31,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(celery_worker_up)",
+          "expr": "(sum(celery_worker_up)) or vector(0)",
           "instant": true
         }
       ],
@@ -85,7 +85,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(celery_queue_length)",
+          "expr": "(sum(celery_queue_length)) or vector(0)",
           "instant": true
         }
       ],
@@ -143,7 +143,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(celery_worker_tasks_active)",
+          "expr": "(sum(celery_worker_tasks_active)) or vector(0)",
           "instant": true
         }
       ],
@@ -193,7 +193,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(celery_task_succeeded_total[$__range]))",
+          "expr": "(sum(increase(celery_task_succeeded_total[$__range]))) or vector(0)",
           "instant": true
         }
       ],
@@ -243,7 +243,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(celery_task_failed_total[$__range]))",
+          "expr": "(sum(increase(celery_task_failed_total[$__range]))) or vector(0)",
           "instant": true
         }
       ],
@@ -297,7 +297,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(celery_task_retried_total[$__range]))",
+          "expr": "(sum(increase(celery_task_retried_total[$__range]))) or vector(0)",
           "instant": true
         }
       ],
