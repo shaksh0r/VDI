@@ -1,0 +1,22 @@
+# Probe definitions for blackbox_exporter.
+#
+# tcp_connect is the right check for RDP here: it proves the guest booted,
+# the network path works, and xrdp is listening — which is exactly what the
+# mirroring service needs before a session can start. Speaking the RDP
+# protocol itself would tell us little more and needs credentials.
+modules:
+  rdp_tcp:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+
+  # Separates "host unreachable" from "host up but RDP not listening",
+  # which is the difference between a network problem and a boot still
+  # in progress.
+  icmp_ping:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4

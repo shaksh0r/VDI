@@ -109,6 +109,50 @@ Instrumentator().instrument(app).expose(
 
 
 
+@app.get("/sd/rdp-targets", include_in_schema=False)
+async def rdp_targets():
+    """Prometheus http_sd endpoint: which VMs blackbox should probe.
+
+    Pool VMs come and go, so their floating IPs cannot be written into a
+    static scrape config. Prometheus polls this endpoint instead and picks
+    up new VMs (and drops destroyed ones) on its own.
+
+    Only instances that are supposed to be reachable are listed. A VM still
+    provisioning has no RDP server yet, and one in error has no VM at all —
+    probing either would report a failure that is expected rather than a
+    problem worth looking at.
+    """
+    try:
+        async with app.state.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT host(i.floating_ip) AS ip,
+                       i.instance_id::text  AS instance_id,
+                       i.status::text       AS status,
+                       p.name               AS pool
+                FROM desktop_instances i
+                JOIN desktop_pools p ON p.pool_id = i.pool_id
+                WHERE i.floating_ip IS NOT NULL
+                  AND i.status IN ('ready', 'assigned', 'in_use')
+                  AND p.deleted_at IS NULL
+                """
+            )
+    except Exception as exc:
+        logger.warning("rdp-targets discovery failed: %s", exc)
+        return []
+
+    return [
+        {
+            "targets": [f"{r['ip']}:{config.VM_RDP_PORT}"],
+            "labels": {
+                "pool": r["pool"],
+                "instance_id": r["instance_id"],
+                "vm_status": r["status"],
+            },
+        }
+        for r in rows
+    ]
+
 @app.get("/health")
 async def health():
     db_ok = False

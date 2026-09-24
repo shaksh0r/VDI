@@ -1,0 +1,292 @@
+{
+  "uid": "vdi-vm-reachability",
+  "title": "VDI — VM Reachability (RDP)",
+  "tags": ["vdi"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": true,
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "VMs probed",
+      "description": "Instances currently discovered for probing: ready, assigned or in_use, with a floating IP. VMs still provisioning are deliberately excluded.",
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "(count(probe_success{job=\"blackbox_rdp\"})) or vector(0)", "instant": true }
+      ],
+      "options": {
+        "graphMode": "area", "colorMode": "value", "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Reachable",
+      "description": "VMs accepting TCP connections on the RDP port right now.",
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "(sum(probe_success{job=\"blackbox_rdp\"})) or vector(0)", "instant": true }
+      ],
+      "options": {
+        "graphMode": "area", "colorMode": "background", "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Unreachable",
+      "description": "Discovered VMs that refuse or time out on the RDP port. These are VMs the system believes are ready but a student could not connect to.",
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(count(probe_success{job=\"blackbox_rdp\"} == 0)) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "graphMode": "area", "colorMode": "background", "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Slowest connect",
+      "description": "Worst TCP connect time across all probed VMs. A climbing value often precedes outright failures.",
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(max(probe_duration_seconds{job=\"blackbox_rdp\"})) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "graphMode": "area", "colorMode": "value", "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Fleet availability",
+      "description": "Share of probes that succeeded over the selected range, across every VM.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(avg(avg_over_time(probe_success{job=\"blackbox_rdp\"}[$__range]))) or vector(0)",
+          "instant": true
+        }
+      ],
+      "options": {
+        "graphMode": "none", "colorMode": "background", "textMode": "value",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.9 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "RDP reachability per VM",
+      "description": "1 = the VM accepted a TCP connection on 3389. A VM dropping to 0 while its status stays 'ready' is the exact failure a student experiences as a session that will not start.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "probe_success{job=\"blackbox_rdp\"}",
+          "legendFormat": "{{pool}} · {{instance}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN", "index": 0 },
+                "1": { "text": "UP", "index": 1 }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "TCP connect time per VM",
+      "description": "How long the RDP port took to accept. Spikes here usually mean the guest is under load or the network path degraded.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "probe_duration_seconds{job=\"blackbox_rdp\"}",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "decimals": 3,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Per-VM status",
+      "description": "Every probed VM with its pool, the status provisioning believes it has, and what the probe actually found.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "probe_success{job=\"blackbox_rdp\"}", "instant": true, "format": "table" },
+        { "refId": "B", "expr": "probe_duration_seconds{job=\"blackbox_rdp\"}", "instant": true, "format": "table" }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "instance", "mode": "outer" } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true, "Time 1": true, "Time 2": true,
+              "__name__": true, "__name__ 1": true, "__name__ 2": true,
+              "job": true, "job 1": true, "job 2": true,
+              "pool 2": true, "instance_id 2": true, "vm_status 2": true
+            },
+            "renameByName": {
+              "instance": "VM (ip:port)",
+              "pool 1": "Pool",
+              "vm_status 1": "DB status",
+              "instance_id 1": "Instance",
+              "Value #A": "Reachable",
+              "Value #B": "Connect time"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Reachable" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": { "text": "DOWN", "color": "red", "index": 0 },
+                      "1": { "text": "UP", "color": "green", "index": 1 }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Connect time" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 3 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

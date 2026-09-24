@@ -56,6 +56,8 @@ OPENSTACK_REQUEST_TIMEOUT       = int(os.getenv("OPENSTACK_REQUEST_TIMEOUT",    
 VM_KEY_NAME           = os.getenv("VM_KEY_NAME",           "rdp")
 VM_SECURITY_GROUP     = os.getenv("VM_SECURITY_GROUP",     "allow-ping-ssh")
 VM_BOOT_VOLUME_SIZE_GB = int(os.getenv("VM_BOOT_VOLUME_SIZE_GB", "10"))
+# Guest RDP port — used by the readiness probe and by blackbox discovery.
+VM_RDP_PORT           = int(os.getenv("VM_RDP_PORT",           "3389"))
 
 #Pool defaults
 DEFAULT_MAX_SESSION_MINUTES = int(os.getenv("DEFAULT_MAX_SESSION_MINUTES", "240"))

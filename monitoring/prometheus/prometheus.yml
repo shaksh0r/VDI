@@ -31,3 +31,22 @@ scrape_configs:
   - job_name: celery
     static_configs:
       - targets: ["celery-exporter:9808"]
+
+  # VM RDP reachability. Targets are discovered from the provisioning
+  # service rather than hardcoded: pool VMs are created and destroyed
+  # continuously, so their floating IPs cannot live in this file.
+  - job_name: blackbox_rdp
+    metrics_path: /probe
+    params:
+      module: [rdp_tcp]
+    http_sd_configs:
+      - url: http://provisioning-server:8001/sd/rdp-targets
+        refresh_interval: 30s
+    relabel_configs:
+      # Prometheus must scrape blackbox, passing the VM as ?target=
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115

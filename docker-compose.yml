@@ -299,6 +299,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── VM reachability probes ────────────────────────────────────────────────
+  # Probes each provisioned VM's RDP port from inside the app network, so it
+  # measures the same path the mirroring container uses to reach the guest.
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox
+    command: --config.file=/etc/blackbox/blackbox.yml
+    networks:
+      - app_net
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    dns:
+      - 172.17.0.251
+      - 172.17.0.252
+      - 8.8.8.8
+    cap_add:
+      - NET_RAW          # required for the icmp prober
+    restart: unless-stopped
+
 networks:
   app_net:
     driver: bridge
