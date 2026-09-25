@@ -232,35 +232,6 @@ COMMENT ON COLUMN desktop_pools.flavor_id IS 'OpenStack flavor name';
 COMMENT ON COLUMN desktop_pools.allowed_roles IS 'Which user roles can access this pool';
 
 -- ----------------------------------------------------------------------------
--- Pool Access Codes (teacher class pools, access_mode = 'code')
--- One code per VM seat of the class pool. A student redeems their code once
--- (Part 3); the code stays bound to that student while the class runs.
--- ----------------------------------------------------------------------------
-CREATE TABLE pool_access_codes (
-    code_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    pool_id UUID NOT NULL REFERENCES desktop_pools(pool_id) ON DELETE CASCADE,
-    code VARCHAR(16) NOT NULL UNIQUE, -- unambiguous alphabet, no 0/O/1/I/L
-    redeemed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
-    redeemed_at TIMESTAMP,
-    revoked_at TIMESTAMP, -- teacher/admin revoked: no longer redeemable
-    affinity_instance_id UUID REFERENCES desktop_instances(instance_id)
-        ON DELETE SET NULL, -- VM reserved for this code (one-to-one)
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Indexes for pool_access_codes
-CREATE INDEX idx_pool_codes_pool ON pool_access_codes (pool_id);
-CREATE INDEX idx_pool_codes_redeemed_by ON pool_access_codes (redeemed_by)
-WHERE redeemed_by IS NOT NULL;
-CREATE INDEX idx_pool_codes_affinity ON pool_access_codes (affinity_instance_id)
-WHERE affinity_instance_id IS NOT NULL;
-
-COMMENT ON TABLE pool_access_codes IS 'Per-VM access codes for code-gated class pools';
-COMMENT ON COLUMN pool_access_codes.code IS 'Short unambiguous code the student enters to join the class pool';
-COMMENT ON COLUMN pool_access_codes.redeemed_by IS 'Student who redeemed this code (SET NULL if the account is deleted)';
-COMMENT ON COLUMN pool_access_codes.affinity_instance_id IS 'Class VM reserved one-to-one for this code; cleared if the VM is destroyed';
-
--- ----------------------------------------------------------------------------
 -- Desktop Instances (Virtual Machines)
 -- ----------------------------------------------------------------------------
 CREATE TABLE desktop_instances (
@@ -333,6 +304,39 @@ COMMENT ON TABLE desktop_instances IS 'Individual virtual desktop VM instances';
 COMMENT ON COLUMN desktop_instances.connection_details IS 'JSON: {protocol, host, port, username, password_hash}';
 
 COMMENT ON COLUMN desktop_instances.health_check_failures IS 'Consecutive health check failures';
+
+-- ----------------------------------------------------------------------------
+-- Pool Access Codes (teacher class pools, access_mode = 'code')
+-- One code per VM seat of the class pool. A student redeems their code once
+-- (Part 3); the code stays bound to that student while the class runs.
+--
+-- NOTE: this table must be declared AFTER desktop_instances — it carries a
+-- foreign key to desktop_instances(instance_id), and PostgreSQL requires the
+-- referenced table to already exist at CREATE TABLE time.
+-- ----------------------------------------------------------------------------
+CREATE TABLE pool_access_codes (
+    code_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    pool_id UUID NOT NULL REFERENCES desktop_pools(pool_id) ON DELETE CASCADE,
+    code VARCHAR(16) NOT NULL UNIQUE, -- unambiguous alphabet, no 0/O/1/I/L
+    redeemed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    redeemed_at TIMESTAMP,
+    revoked_at TIMESTAMP, -- teacher/admin revoked: no longer redeemable
+    affinity_instance_id UUID REFERENCES desktop_instances(instance_id)
+        ON DELETE SET NULL, -- VM reserved for this code (one-to-one)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for pool_access_codes
+CREATE INDEX idx_pool_codes_pool ON pool_access_codes (pool_id);
+CREATE INDEX idx_pool_codes_redeemed_by ON pool_access_codes (redeemed_by)
+WHERE redeemed_by IS NOT NULL;
+CREATE INDEX idx_pool_codes_affinity ON pool_access_codes (affinity_instance_id)
+WHERE affinity_instance_id IS NOT NULL;
+
+COMMENT ON TABLE pool_access_codes IS 'Per-VM access codes for code-gated class pools';
+COMMENT ON COLUMN pool_access_codes.code IS 'Short unambiguous code the student enters to join the class pool';
+COMMENT ON COLUMN pool_access_codes.redeemed_by IS 'Student who redeemed this code (SET NULL if the account is deleted)';
+COMMENT ON COLUMN pool_access_codes.affinity_instance_id IS 'Class VM reserved one-to-one for this code; cleared if the VM is destroyed';
 
 -- ----------------------------------------------------------------------------
 -- Provisioning Jobs
@@ -1066,6 +1070,19 @@ EXECUTE FUNCTION log_pool_changes();
 -- ============================================================================
 
 -- Default admin user (password: admin123)
+--
+-- IMPORTANT: the auth-service never bcrypts a raw password. It pre-hashes
+-- with SHA-256 and bcrypts THAT digest (see auth-service/server.py:
+-- _hash_password / _verify_password). A plain "bcrypt hash of admin123"
+-- therefore never validates — use `sha256` the password first, then bcrypt
+-- it, whenever this seed needs regenerating:
+--
+--   import bcrypt, hashlib
+--   bcrypt.hashpw(hashlib.sha256(b'admin123').hexdigest().encode(),
+--                 bcrypt.gensalt(rounds=12)).decode()
+--
+-- The hash below was generated exactly that way and verified against the
+-- service's _verify_password().
 INSERT INTO
     users (
         username,
@@ -1079,12 +1096,76 @@ INSERT INTO
 VALUES (
         'admin',
         'admin@buet.ac.bd',
-        '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5F7w7P3kXZX.i', -- bcrypt hash of 'admin123'
+        -- sha256('admin123') -> bcrypt(cost 12)
+        '$2b$12$aLJIgJhBxXziKjlUVQ0f7.L/GlOo8ePlCm.zXZHSeQoRvhmYZbYni',
         'System Administrator',
         'admin',
         TRUE,
         TRUE
-    );
+    )
+ON CONFLICT (username) DO UPDATE
+SET password_hash = EXCLUDED.password_hash,
+    role          = EXCLUDED.role,
+    is_active     = TRUE,
+    deleted_at    = NULL;
+
+-- ----------------------------------------------------------------------------
+-- Default student pool ('student-pool')
+--
+-- Why this exists: nothing else in the system ever CREATES a pool. The
+-- reconciler only *replenishes* pools that already exist, and the teacher
+-- flow resolves image/flavor/network by copying them from a reference pool
+-- (config.TEACHER_REFERENCE_POOL = 'student-pool'). Without this row a fresh
+-- database has no pools, so `replenish_pools_task` has nothing to iterate,
+-- no `create_vm` jobs are ever dispatched, and the dashboard stays empty.
+--
+-- min_vms = 2 → Celery provisions 2 real VMs on OpenStack within ~30s of
+-- startup (each takes a few minutes to reach ACTIVE + open RDP 3389).
+-- Set min_vms = 0 here to keep the pool visible without spending quota.
+--
+-- The OpenStack IDs below match the deployment used by provisioning_service/.env
+-- (EXTERNAL_NETWORK_ID = Buet_Provider_Network for floating IPs):
+--   image   fac30512-31d8-49e1-98b2-f6fda9e74ecd  ubuntu-xfce (XRDP desktop)
+--   flavor  2                                     m1.medium (2 vCPU / 2 GB / 10 GB)
+--   network 58877b05-70db-4c49-8413-8cbd1aa6ad51  prod-net (private, FIP-attachable)
+-- Confirmed against the live cloud: m1.medium's 10 GB root disk matches both
+-- VM_BOOT_VOLUME_SIZE_GB=10 (.env) and the image's min_disk=10.
+-- `ON CONFLICT (name)` keeps an existing pool untouched (and preserves its
+-- current_count), so re-running against a live DB is a no-op.
+-- ----------------------------------------------------------------------------
+INSERT INTO desktop_pools (
+    name,
+    description,
+    base_image_id,
+    flavor_id,
+    network_id,
+    min_vms,
+    max_vms,
+    desktop_type,
+    access_mode,
+    auto_scaling_enabled,
+    status,
+    allowed_roles,
+    max_session_duration_minutes,
+    created_by
+)
+VALUES (
+    'student-pool',
+    'Default walk-in pool for students (non-persistent, auto-replenished)',
+    'fac30512-31d8-49e1-98b2-f6fda9e74ecd',  -- ubuntu-xfce
+    '2',                                      -- m1.medium: 2 vCPU / 2 GB / 10 GB
+    '58877b05-70db-4c49-8413-8cbd1aa6ad51',   -- prod-net
+    2,
+    10,
+    'non_persistent',
+    'open',
+    FALSE,
+    'active',
+    ARRAY['student']::user_role[],
+    240,
+    (SELECT user_id FROM users WHERE username = 'admin')
+)
+ON CONFLICT (name) DO NOTHING;
 
 -- Default system configuration
 INSERT INTO

@@ -9,4 +9,11 @@ app.conf.beat_schedule = {
         "task": "provisioning_service.services.reconciler.replenish_pools_task",
         "schedule": 30.0,
     },
+    # Sweep OpenStack for VMs this service created that the database no longer
+    # tracks (e.g. after `docker compose down -v`). Without this, every DB
+    # reset leaks a full pool of running VMs and then provisions min_vms more.
+    "reconcile-instances": {
+        "task": "provisioning_service.services.reconciler.reconcile_instances_task",
+        "schedule": 300.0,
+    },
 }

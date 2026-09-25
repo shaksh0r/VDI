@@ -167,6 +167,15 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
                 "key_name": config.VM_KEY_NAME,
                 "networks": [{"uuid": pool_row["network_id"]}],
                 "security_groups": [{"name": config.VM_SECURITY_GROUP}],
+                # Metadata doubles as a managed-by marker for the orphan
+                # reconciler: a server with managed_by=provisioning_service
+                # that has no matching desktop_instances row is a leak from a
+                # wiped database and gets destroyed. See services/reconciler.py.
+                "metadata": {
+                    "managed_by": "provisioning_service",
+                    "pool_id": str(pool_id),
+                    "instance_id": str(instance_id),
+                },
                 "block_device_mapping_v2": [
                     {
                         "boot_index": 0,
