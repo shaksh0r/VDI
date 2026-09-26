@@ -177,6 +177,10 @@ base_image_id VARCHAR(255) NOT NULL, -- Glance image UUID
 flavor_id VARCHAR(255) NOT NULL, -- OpenStack flavor (m1.small, m1.medium, etc)
 network_id VARCHAR(255) NOT NULL, -- Neutron network UUID
 security_group_id VARCHAR(255), -- Security group UUID
+-- Root volume size per VM in GB. job_worker creates a volume-backed boot
+-- disk via block_device_mapping_v2, so this (not the flavor's declared disk)
+-- is the VM's actual root disk. NULL = fall back to VM_BOOT_VOLUME_SIZE_GB.
+volume_size_gb INTEGER CHECK (volume_size_gb IS NULL OR volume_size_gb > 0),
 
 -- Pool Sizing
 min_vms INTEGER NOT NULL DEFAULT 1 CHECK (min_vms >= 0),

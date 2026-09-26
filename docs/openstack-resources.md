@@ -97,6 +97,22 @@ asyncio.run(main())
 
 ## Caveats
 
+- **The root disk size cannot be chosen — it is fixed at 10 GB.**
+  Verified empirically on this deployment: `block_device_mapping_v2`
+  `volume_size` is **ignored**, and so is the flavor's declared disk.
+  Requests for 25 GB, 30 GB and 35 GB all produced a 10 GB volume, as did
+  using a 50 GB flavor (`c2r4d50`). Every VM gets a root volume of
+  `VM_BOOT_VOLUME_SIZE_GB` (10). Consequently:
+
+  - The teacher flavor picker selects **CPU and RAM only**; disk is fixed.
+  - Storage quota is priced at 10 GB/VM regardless of the flavor chosen.
+  - `disk_gb` in `GET /teacher/flavors` reports the *actual* 10 GB, not the
+    flavor's nominal size — showing the nominal figure would mislead.
+
+  If a larger root disk is ever needed, the likely routes are a Glance image
+  with a higher `min_disk`, or creating a Cinder volume separately and booting
+  from it via `volume_id` — neither verified here.
+
 - **The Keystone token auto-refreshes** (`openstack/client.py`), so these
   queries keep working as long as `OPENSTACK_PASSWORD` is valid. If auth
   starts failing, the service-account password was probably rotated.
@@ -106,3 +122,27 @@ asyncio.run(main())
 - **Floating IPs are per-VM** (`finalize_vm_task`) and deleted on teardown
   (`delete_vm_task`). Quota can still leak if a job dies mid-flight — the
   reconciler's orphan sweep is the safety net, not a guarantee.
+
+## Project quota
+
+Enforced by OpenStack; read live by `services/quota_service.py` so the API can
+refuse an over-quota request *before* dispatching provisioning jobs.
+
+| Resource | Limit | Notes |
+|---|---|---|
+| Instances | 10 | Counts **all** servers in the project, including ones not created by this service |
+| vCPUs | 20 | `totalCoresUsed` includes non-VDI servers |
+| RAM | 51200 MB (50 GB) | |
+| Volumes | 10 | Includes volumes created outside this service |
+| Storage | 1000 GB | |
+
+**Always read usage from the cloud, never sum local tables.** The project is
+shared: at the time of writing `totalInstancesUsed` was 6 while only 2 VMs
+belonged to this service, and `totalVolumesUsed` was 5 for 2 VMs — the extras
+belonged to `prod_compute_1` (a SHUTOFF server that still consumes quota) and a
+stray 20 GB volume. A DB-derived figure would under-report and let teachers
+oversubscribe, then fail at VM creation.
+
+A reserve (`STUDENT_POOL_RESERVE_*` in `config.py`) is withheld from the
+teacher-visible budget so a class pool cannot starve the student walk-in pool.
+

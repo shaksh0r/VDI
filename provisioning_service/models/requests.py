@@ -21,6 +21,11 @@ class PoolCreateRequest(BaseModel):
     network_id: str = Field(
         ..., description="OpenStack Neutron network UUID",
     )
+    volume_size_gb: Optional[int] = Field(
+        None, ge=1, le=500,
+        description="Root volume size per VM in GB. NULL uses the "
+                    "VM_BOOT_VOLUME_SIZE_GB config default.",
+    )
     min_vms: int = Field(
         default=1, ge=0, le=100,
         description="Minimum number of ready VMs to maintain",
@@ -87,14 +92,24 @@ class VMReleaseRequest(BaseModel):
 class TeacherPoolCreateRequest(BaseModel):
     """Body for the teacher (faculty) class-pool creation endpoint.
 
-    Only the pool name and VM count come from the teacher — the compute
-    template (image / flavor / network / spec) is fixed server-side.
+    The teacher chooses the pool name, VM count, compute flavor and root
+    volume size. Image / network / security group stay fixed server-side.
+
+    `flavor_id` and `volume_gb` are optional so existing clients keep
+    working: when omitted they fall back to the reference-pool template
+    and the configured default volume size.
     """
 
     name: str = Field(..., min_length=3, max_length=100, description="Class pool name (unique)")
     vm_count: int = Field(
         ..., ge=1, le=100,
         description="Number of VMs (and later, access codes) for the class",
+    )
+    flavor_id: Optional[str] = Field(
+        None,
+        description="Nova flavor for the class VMs. Omit to use the "
+                    "platform default (reference-pool flavor). The flavor "
+                    "also determines the root disk size.",
     )
 
 

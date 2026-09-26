@@ -25,7 +25,7 @@ import time
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import config
 from ..message_queue.celery_app import app
@@ -35,7 +35,10 @@ from ..models.requests import (
     TeacherPoolCreateRequest,
 )
 from ..models.responses import (
+    FlavorCatalogResponse,
+    FlavorOption,
     PoolResponse,
+    QuotaResponse,
     TeacherCodeEntry,
     TeacherCodeGenerateResponse,
     TeacherCodeListResponse,
@@ -45,7 +48,7 @@ from ..models.responses import (
     TeacherTemplateResponse,
 )
 from ..openstack import nova
-from ..services import pool_service
+from ..services import pool_service, quota_service
 from .deps import get_db, require_roles
 
 logger = logging.getLogger(__name__)
@@ -168,9 +171,124 @@ async def pool_template(
     )
 
 
+@router.get("/quota", response_model=QuotaResponse)
+async def get_quota(
+    request: Request,
+    user: dict = Depends(staff),
+):
+    """Live project quota, with the student-pool reserve already deducted.
+
+    Read straight from the cloud rather than summed from our own tables:
+    the project is shared, so volumes/snapshots created outside this
+    service still consume quota and must be visible to the teacher.
+    """
+    snap = await quota_service.read_quota(request.app.state.openstack)
+    return QuotaResponse(**snap.as_dict())
+
+
+def _tier_for(vcpus: int, ram_mb: int) -> str:
+    """Bucket a flavor for the picker's grouping."""
+    if vcpus <= 2 and ram_mb <= 4096:
+        return "small"
+    if vcpus <= 4 and ram_mb <= 8192:
+        return "medium"
+    return "large"
+
+
+@router.get("/flavors", response_model=FlavorCatalogResponse)
+async def flavor_catalog(
+    request: Request,
+    user: dict = Depends(staff),
+):
+    """Selectable compute sizes, annotated with how many still fit.
+
+    Each entry reports `max_count`: the number of VMs of that flavor the
+    teacher could still create given current project usage. That lets the
+    UI cap the count field accurately instead of letting the teacher submit
+    something the API will refuse.
+
+    NOTE ON DISK: the flavor's declared disk is reported for information
+    only. This deployment ignores both block_device_mapping_v2.volume_size
+    and the flavor disk — every VM gets a VM_BOOT_VOLUME_SIZE_GB root
+    volume (verified empirically). Storage quota is priced from that fixed
+    size, so `max_count` uses it too.
+
+    GPU flavors are excluded; they are outside this allocation.
+    """
+    snap = await quota_service.read_quota(request.app.state.openstack)
+    actual_disk_gb = int(config.VM_BOOT_VOLUME_SIZE_GB)
+
+    try:
+        body = await nova.list_flavors_detail(request.app.state.openstack)
+    except Exception as exc:  # noqa: BLE001 — degrade, don't 500 the page
+        logger.warning("flavor catalog unavailable: %s", exc)
+        return FlavorCatalogResponse(
+            flavors=[], total=0,
+            min_volume_gb=config.TEACHER_MIN_VOLUME_GB,
+            max_volume_gb=config.TEACHER_MAX_VOLUME_GB,
+            default_volume_gb=config.TEACHER_FALLBACK_DISK_GB,
+            warnings=["OpenStack flavor list unavailable — try again shortly"],
+        )
+
+    options: list[FlavorOption] = []
+    for fl in body.get("flavors", []):
+        name = str(fl.get("name", ""))
+        vcpus = int(fl.get("vcpus") or 0)
+        ram_mb = int(fl.get("ram") or 0)
+        disk_gb = int(fl.get("disk") or 0)
+        if vcpus <= 0 or ram_mb <= 0 or disk_gb <= 0:
+            continue
+        # Exclude GPU/oversized flavors — outside this allocation.
+        if "gpu" in name.lower():
+            continue
+        if vcpus > config.QUOTA_MAX_VCPUS or ram_mb > config.QUOTA_MAX_RAM_MB:
+            continue
+        # Exclude flavors too small to run the desktop image.
+        if (
+            vcpus < config.TEACHER_MIN_FLAVOR_VCPUS
+            or ram_mb < config.TEACHER_MIN_FLAVOR_RAM_MB
+        ):
+            continue
+
+        # How many of this flavor fit in every constrained dimension.
+        # Storage is priced at the ACTUAL boot volume size, not the
+        # flavor's nominal disk (see the note above).
+        fits = [
+            snap.free_vcpus // vcpus if vcpus else 0,
+            snap.free_ram_mb // ram_mb if ram_mb else 0,
+            snap.free_volumes,
+            snap.free_storage_gb // actual_disk_gb if actual_disk_gb else 0,
+        ]
+        max_count = max(0, min(fits))
+
+        options.append(
+            FlavorOption(
+                flavor_id=str(fl.get("id")),
+                name=name,
+                vcpus=vcpus,
+                ram_mb=ram_mb,
+                disk_gb=actual_disk_gb,
+                tier=_tier_for(vcpus, ram_mb),
+                max_count=min(max_count, config.TEACHER_VM_COUNT_LIMIT),
+            )
+        )
+
+    # Cheapest-first so the picker's default lands on the smallest option.
+    options.sort(key=lambda o: (o.vcpus, o.ram_mb, o.disk_gb, o.name))
+    return FlavorCatalogResponse(
+        flavors=options,
+        total=len(options),
+        min_volume_gb=config.TEACHER_MIN_VOLUME_GB,
+        max_volume_gb=config.TEACHER_MAX_VOLUME_GB,
+        default_volume_gb=config.TEACHER_FALLBACK_DISK_GB,
+        warnings=snap.warnings,
+    )
+
+
 @router.post("/pools", response_model=PoolResponse, status_code=201)
 async def create_class_pool(
     data: TeacherPoolCreateRequest,
+    request: Request,
     user: dict = Depends(staff),
     conn=Depends(get_db),
 ):
@@ -181,13 +299,61 @@ async def create_class_pool(
         )
 
     tpl = await _resolve_template(conn)
+
+    # ── Resolve the teacher's chosen compute size ────────────────────────
+    flavor_id = (data.flavor_id or tpl["flavor_id"]).strip()
+    if not flavor_id:
+        raise HTTPException(
+            status_code=400,
+            detail="no flavor selected and no reference flavor available",
+        )
+    spec = await _flavor_spec(request, flavor_id)
+    if not spec.get("vcpus") or not spec.get("ram_mb"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"flavor {flavor_id} could not be resolved in OpenStack",
+        )
+
+    # Disk is NOT freely choosable on this deployment. Verified empirically:
+    # the cloud ignores block_device_mapping_v2.volume_size AND the flavor's
+    # declared disk — requesting 25, 30 and 35 GB (and using a 50 GB flavor)
+    # all produced a 10 GB root volume. Nova/Cinder here fixes the boot disk
+    # at VM_BOOT_VOLUME_SIZE_GB. The flavor therefore selects CPU and RAM
+    # only; we record the real size for quota accounting and display.
+    volume_gb = int(config.VM_BOOT_VOLUME_SIZE_GB)
+
+    # ── Pre-flight quota check ───────────────────────────────────────────
+    # Done BEFORE inserting the pool or dispatching jobs: an over-quota
+    # request must fail immediately, not spawn N Celery jobs that each fail
+    # minutes later when Nova rejects the create.
+    snap = await quota_service.read_quota(request.app.state.openstack)
+    try:
+        quota_service.check_request(
+            snap,
+            vcpus=spec["vcpus"] * data.vm_count,
+            ram_mb=spec["ram_mb"] * data.vm_count,
+            volumes=data.vm_count,
+            storage_gb=volume_gb * data.vm_count,
+        )
+    except quota_service.QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "quota_exceeded",
+                "message": str(exc),
+                "violations": exc.violations,
+                "quota": snap.as_dict(),
+            },
+        ) from exc
+
     pool_request = PoolCreateRequest(
         name=data.name,
         desktop_type="persistent",
         access_mode="code",
         image_id=tpl["image_id"],
-        flavor_id=tpl["flavor_id"],
+        flavor_id=flavor_id,
         network_id=tpl["network_id"],
+        volume_size_gb=volume_gb,
         min_vms=0,                 # no auto-replenish — teacher-managed lifecycle
         max_vms=data.vm_count,
         max_session_minutes=config.TEACHER_MAX_SESSION_MINUTES,
@@ -208,8 +374,10 @@ async def create_class_pool(
         )
 
     logger.info(
-        "teacher %s created class pool '%s' (%d VMs, %d jobs dispatched)",
-        user.get("username"), data.name, data.vm_count, len(job_ids),
+        "teacher %s created class pool '%s' (%d x flavor=%s %dvCPU/%dMB "
+        "vol=%dGB, %d jobs dispatched)",
+        user.get("username"), data.name, data.vm_count, flavor_id,
+        spec["vcpus"], spec["ram_mb"], volume_gb, len(job_ids),
     )
     return pool
 
@@ -285,7 +453,8 @@ async def _own_code_pool(conn, user: dict, pool_id: str) -> Any:
     """
     row = await conn.fetchrow(
         """
-        SELECT pool_id, name, max_vms, access_mode, created_by, deleted_at
+        SELECT pool_id, name, max_vms, access_mode, created_by, deleted_at,
+               flavor_id, volume_size_gb
         FROM desktop_pools
         WHERE pool_id = $1
         """,
@@ -475,6 +644,7 @@ async def regenerate_code(
 async def expand_class_pool(
     pool_id: str,
     data: TeacherExpandRequest,
+    request: Request,
     user: dict = Depends(staff),
     conn=Depends(get_db),
 ):
@@ -490,6 +660,32 @@ async def expand_class_pool(
                 f"limit of {config.TEACHER_VM_COUNT_LIMIT} VMs"
             ),
         )
+
+    # ── Pre-flight quota check (same reasoning as create) ────────────────
+    # Uses the pool's own flavor so the delta is priced correctly. Disk is
+    # fixed by the cloud (see create_class_pool), so price the configured
+    # boot volume size rather than the flavor's nominal disk.
+    spec = await _flavor_spec(request, pool["flavor_id"])
+    vol = int(config.VM_BOOT_VOLUME_SIZE_GB)
+    snap = await quota_service.read_quota(request.app.state.openstack)
+    try:
+        quota_service.check_request(
+            snap,
+            vcpus=int(spec["vcpus"] or 0) * data.add_vms,
+            ram_mb=int(spec["ram_mb"] or 0) * data.add_vms,
+            volumes=data.add_vms,
+            storage_gb=vol * data.add_vms,
+        )
+    except quota_service.QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "quota_exceeded",
+                "message": str(exc),
+                "violations": exc.violations,
+                "quota": snap.as_dict(),
+            },
+        ) from exc
 
     await conn.execute(
         """

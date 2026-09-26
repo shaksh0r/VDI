@@ -13,6 +13,7 @@ class PoolResponse(BaseModel):
     image_id: str
     flavor_id: str
     network_id: str
+    volume_size_gb: Optional[int] = None
     min_vms: int
     max_vms: int
     current_count: int
@@ -46,6 +47,51 @@ class TeacherTemplateResponse(BaseModel):
     max_session_minutes: int
     fixed: bool = True
     note: str = "VM specification is fixed by the platform administrator"
+
+
+class QuotaResourceUsage(BaseModel):
+    """One tracked resource: limit, current usage, reserve and headroom."""
+
+    limit: int
+    used: float
+    reserved: int
+    free: float
+
+
+class QuotaResponse(BaseModel):
+    """Live project quota for the admin/teacher dashboards.
+
+    `free` already excludes the reserve withheld for the student walk-in
+    pool, so it is the figure a teacher may actually spend.
+    """
+
+    vcpus: QuotaResourceUsage
+    ram_gb: QuotaResourceUsage
+    volumes: QuotaResourceUsage
+    storage_gb: QuotaResourceUsage
+    warnings: list[str] = []
+
+
+class FlavorOption(BaseModel):
+    """One selectable compute size in the teacher's flavor picker."""
+
+    flavor_id: str
+    name: str
+    vcpus: int
+    ram_mb: int
+    disk_gb: int
+    tier: str            # 'small' | 'medium' | 'large' — lets the UI group
+    # How many VMs of this flavor still fit within the free quota.
+    max_count: int
+
+
+class FlavorCatalogResponse(BaseModel):
+    flavors: list[FlavorOption]
+    total: int
+    min_volume_gb: int
+    max_volume_gb: int
+    default_volume_gb: int
+    warnings: list[str] = []
 
 
 class TeacherPoolSummary(BaseModel):

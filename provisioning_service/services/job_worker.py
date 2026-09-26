@@ -182,7 +182,11 @@ async def _create_vm_async(task, pool_id: str, job_id: str):
                         "uuid": pool_row["base_image_id"],
                         "source_type": "image",
                         "destination_type": "volume",
-                        "volume_size": config.VM_BOOT_VOLUME_SIZE_GB,
+                        # Per-pool size (teacher-chosen) with a config fallback.
+                        "volume_size": int(
+                            pool_row["volume_size_gb"]
+                            or config.VM_BOOT_VOLUME_SIZE_GB
+                        ),
                         "delete_on_termination": True,
                     }
                 ],

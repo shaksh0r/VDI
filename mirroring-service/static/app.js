@@ -42,6 +42,7 @@ var logoutBtn     = document.getElementById("logout");
 var displayEl     = document.getElementById("display");
 var placeholderEl = document.getElementById("placeholder");
 var classCodeEl  = document.getElementById("class-code");
+var authPageEl    = document.getElementById("authpage");
 var loginEl       = document.getElementById("login");
 var loginForm     = document.getElementById("login-form");
 var loginUser     = document.getElementById("login-username");
@@ -130,15 +131,16 @@ var authPane = "login";
 
 function showAuthPane(pane) {
   authPane = (pane === "signup") ? "signup" : "login";
-  loginEl.style.display  = (authPane === "login")  ? "flex" : "none";
-  signupEl.style.display = (authPane === "signup") ? "flex" : "none";
+  // `hidden` (not inline display) so the .authcard[hidden] CSS rule wins
+  // and the card's entry animation replays on each switch.
+  loginEl.hidden  = (authPane !== "login");
+  signupEl.hidden = (authPane !== "signup");
 }
 
 function setView(mode) {
   // mode: "login" | "idle" | "connected" | "admin" | "teacher"
-  // Explicit display values (never "") so inline styles always win over
-  // stylesheet/[hidden]-attribute defaults — "" silently leaves elements
-  // hidden (this was the blank-screen bug after connecting).
+  // The auth page is a full-screen sibling of .shell — when it is open the
+  // entire workspace (chrome, action bar, viewport, footer) is covered.
   var showLogin   = (mode === "login");
   var showIdle    = (mode === "idle");
   var showDisp    = (mode === "connected");
@@ -147,10 +149,14 @@ function setView(mode) {
 
   if (showLogin) {
     showAuthPane(authPane);
+    authPageEl.hidden = false;
+    // Move focus into the page for keyboard users.
+    var focusEl = (authPane === "signup") ? regName : loginUser;
+    if (focusEl) { try { focusEl.focus(); } catch (e) {} }
   } else {
-    loginEl.style.display  = "none";
-    signupEl.style.display = "none";
+    authPageEl.hidden = true;
   }
+
   placeholderEl.style.display = showIdle   ? "flex"  : "none";
   displayEl.style.display     = showDisp   ? "block" : "none";
   adminPaneEl.style.display   = showAdmin   ? "flex" : "none";
@@ -601,23 +607,172 @@ function loadAdminConsole() {
   if (consolePoolsEl.style.display !== "none") loadAdminPools();
 }
 
-// ── Teacher pane: class pools ─────────────────────────────────────────────────
-function loadPoolTemplate() {
-  return staffFetch(provApiBase(), "/teacher/pool-template")
+// ── Teacher pane: quota + flavor picker ──────────────────────────────────────
+// Project quota is shared and enforced server-side. These helpers mirror that
+// arithmetic client-side purely to give immediate feedback — the API remains
+// the authority and re-checks before creating anything.
+var quotaData  = null;    // latest /teacher/quota payload
+var flavorData = null;    // latest /teacher/flavors payload
+
+function fmtGb(n) {
+  var v = Number(n);
+  if (isNaN(v)) return "—";
+  return (v % 1 === 0 ? v : v.toFixed(1)) + " GB";
+}
+
+function loadQuota() {
+  var msgEl = document.getElementById("quota-msg");
+  return staffFetch(provApiBase(), "/teacher/quota")
     .then(function (resp) {
       if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
       return resp.json();
     })
-    .then(function (t) {
-      document.getElementById("tp-spec-vcpus").textContent   = t.vcpus + " vCPU" + (t.vcpus === 1 ? "" : "s");
-      document.getElementById("tp-spec-ram").textContent     = fmtRam(t.ram_mb);
-      document.getElementById("tp-spec-disk").textContent    = t.disk_gb + " GB";
-      document.getElementById("tp-spec-session").textContent = t.max_session_minutes + " min per session";
+    .then(function (q) {
+      quotaData = q;
+      renderQuota(q);
+      setManageMsg(msgEl, q.warnings && q.warnings.length
+        ? "Partial data: " + q.warnings.join(", ") : "", !(q.warnings && q.warnings.length));
+      updateEstimate();
     })
     .catch(function (err) {
       if (err && err.message === "auth-expired") return;
-      // Spec stays "…" — the create form will surface the real error.
+      setManageMsg(msgEl, err.message || "Could not read quota", false);
     });
+}
+
+function quotaRow(label, res, unit) {
+  var limit = Number(res.limit) || 0;
+  var used  = Number(res.used) || 0;
+  var resv  = Number(res.reserved) || 0;
+  var free  = Number(res.free) || 0;
+
+  // The reserve is drawn from the same pool, so show it inside the bar as
+  // "not available to you" rather than as unexplained missing capacity.
+  var pct = function (n) { return limit > 0 ? Math.min(100, (n / limit) * 100) : 0; };
+  var cls = "";
+  if (free <= 0) cls = " quota-item--full";
+  else if (limit > 0 && free / limit <= 0.2) cls = " quota-item--tight";
+
+  var fmt = function (n) { return unit === "GB" ? fmtGb(n) : n; };
+  return '<div class="quota-item' + cls + '">' +
+      '<div class="quota-item__head">' +
+        '<span class="quota-item__name">' + escHtml(label) + '</span>' +
+        '<span class="quota-item__nums"><b>' + escHtml(String(fmt(free))) + '</b> free' +
+          ' <span>/ ' + escHtml(String(fmt(limit))) + '</span></span>' +
+      '</div>' +
+      '<div class="quota-bar">' +
+        '<span class="quota-bar__used" style="width:' + pct(used) + '%"></span>' +
+        '<span class="quota-bar__reserved" style="width:' + pct(resv) + '%"></span>' +
+      '</div>' +
+    '</div>';
+}
+
+function renderQuota(q) {
+  var el = document.getElementById("quota-list");
+  if (!el) return;
+  el.innerHTML =
+    quotaRow("vCPUs", q.vcpus, "") +
+    quotaRow("Memory", q.ram_gb, "GB") +
+    quotaRow("Volumes", q.volumes, "") +
+    quotaRow("Storage", q.storage_gb, "GB") +
+    '<div class="quota-legend">' +
+      '<span class="quota-legend__key"><i class="quota-legend__dot" style="background:var(--c-accent)"></i>in use</span>' +
+      '<span class="quota-legend__key"><i class="quota-legend__dot" style="background:var(--c-line-3)"></i>reserved for students</span>' +
+    '</div>';
+}
+
+function loadFlavors() {
+  return staffFetch(provApiBase(), "/teacher/flavors")
+    .then(function (resp) {
+      if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+      return resp.json();
+    })
+    .then(function (d) {
+      flavorData = d;
+      var sel = document.getElementById("tp-flavor");
+      if (!sel) return;
+      if (!d.flavors.length) {
+        sel.innerHTML = '<option value="">No flavors available</option>';
+        return;
+      }
+      // Group by tier so 30-odd entries stay browsable.
+      var tiers = { small: "Small", medium: "Medium", large: "Large" };
+      var html = "";
+      ["small", "medium", "large"].forEach(function (t) {
+        var group = d.flavors.filter(function (f) { return f.tier === t; });
+        if (!group.length) return;
+        html += '<optgroup label="' + tiers[t] + '">';
+        group.forEach(function (f) {
+          html += '<option value="' + escHtml(f.flavor_id) + '">' +
+            escHtml(f.name + " — " + f.vcpus + " vCPU · " + fmtRam(f.ram_mb) +
+                    " · " + f.disk_gb + " GB disk") +
+            '</option>';
+        });
+        html += '</optgroup>';
+      });
+      sel.innerHTML = html;
+      updateEstimate();
+    })
+    .catch(function (err) {
+      if (err && err.message === "auth-expired") return;
+      setManageMsg(document.getElementById("pool-create-msg"),
+                   err.message || "Could not load VM sizes", false);
+    });
+}
+
+function selectedFlavor() {
+  if (!flavorData) return null;
+  var sel = document.getElementById("tp-flavor");
+  if (!sel) return null;
+  var id = sel.value;
+  for (var i = 0; i < flavorData.flavors.length; i++) {
+    if (String(flavorData.flavors[i].flavor_id) === String(id)) return flavorData.flavors[i];
+  }
+  return null;
+}
+
+// Live, client-side estimate of what the current form would consume.
+function updateEstimate() {
+  var card = document.getElementById("tp-estimate");
+  var note = document.getElementById("tp-estimate-note");
+  var submitBtn = document.getElementById("tp-submit");
+  if (!card || !quotaData) return;
+
+  var f = selectedFlavor();
+  var count = parseInt(document.getElementById("tp-count").value, 10);
+  if (!f || !count || count < 1) {
+    ["tp-need-vcpus", "tp-need-ram", "tp-need-vols", "tp-need-disk"].forEach(function (id) {
+      var e = document.getElementById(id); if (e) e.textContent = "—";
+    });
+    card.classList.remove("spec-card--over");
+    if (note) note.textContent = "Checked against live project quota before anything is created.";
+    if (submitBtn) submitBtn.disabled = false;
+    return;
+  }
+
+  var needV = f.vcpus * count;
+  var needR = f.ram_mb * count;
+  var needVl = count;
+  var needD = f.disk_gb * count;
+
+  document.getElementById("tp-need-vcpus").textContent = needV + " of " + quotaData.vcpus.free + " free";
+  document.getElementById("tp-need-ram").textContent   = fmtRam(needR) + " of " + fmtGb(quotaData.ram_gb.free) + " free";
+  document.getElementById("tp-need-vols").textContent  = needVl + " of " + quotaData.volumes.free + " free";
+  document.getElementById("tp-need-disk").textContent  = fmtGb(needD) + " of " + fmtGb(quotaData.storage_gb.free) + " free";
+
+  var over = [];
+  if (needV  > quotaData.vcpus.free)      over.push("vCPUs");
+  if (needR  > quotaData.ram_gb.free * 1024) over.push("memory");
+  if (needVl > quotaData.volumes.free)    over.push("volumes");
+  if (needD  > quotaData.storage_gb.free) over.push("storage");
+
+  card.classList.toggle("spec-card--over", over.length > 0);
+  if (note) {
+    note.textContent = over.length
+      ? "Exceeds available " + over.join(", ") + " — reduce the count or pick a smaller size."
+      : "Fits within the project's remaining capacity.";
+  }
+  if (submitBtn) submitBtn.disabled = over.length > 0;
 }
 
 var expandedTeacherPoolId = null;   // pool whose codes panel is open
@@ -897,7 +1052,8 @@ function teardownClassPool(poolId, poolName) {
 }
 
 function loadTeacherDashboard() {
-  loadPoolTemplate();
+  loadFlavors();
+  loadQuota();
   loadTeacherPools();
 }
 
@@ -906,8 +1062,14 @@ function createPool(e) {
   setManageMsg(poolCreateMsg, "", false);
   var name  = tpName.value.trim();
   var count = parseInt(tpCount.value, 10);
+  var flavorEl = document.getElementById("tp-flavor");
+  var flavorId = flavorEl ? flavorEl.value : "";
   if (name.length < 3) {
     setManageMsg(poolCreateMsg, "Pool name must be at least 3 characters", false);
+    return;
+  }
+  if (!flavorId) {
+    setManageMsg(poolCreateMsg, "Pick a VM size first", false);
     return;
   }
   if (!count || count < 1 || count > 40) {
@@ -918,9 +1080,19 @@ function createPool(e) {
   return staffFetch(provApiBase(), "/teacher/pools", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name, vm_count: count }),
+    body: JSON.stringify({ name: name, vm_count: count, flavor_id: flavorId }),
   }).then(function (resp) {
-    if (!resp.ok) return apiError(resp).then(function (m) { throw new Error(m); });
+    if (!resp.ok) return apiError(resp).then(function (m) {
+      var err = new Error(m);
+      err.status = resp.status;
+      // Quota refusals carry a structured breakdown worth surfacing fully.
+      return resp.json().then(function (body) {
+        if (body && body.detail && body.detail.violations) {
+          err.detail = body.detail;
+        }
+        throw err;
+      }).catch(function () { throw err; });
+    });
     return resp.json();
   }).then(function (pool) {
     poolCreateForm.reset();
@@ -928,9 +1100,15 @@ function createPool(e) {
       pool.max_vms + " VM(s) are provisioning now and will appear below as they become ready (a few minutes each).", true);
     setStatus("Ready", false);
     loadTeacherPools();
+    loadQuota();          // usage just changed
+    loadFlavors();        // max_count changed with it
   }).catch(function (err) {
     if (err && err.message === "auth-expired") return;
-    setManageMsg(poolCreateMsg, err.message || "Pool creation failed", false);
+    var txt = (err && err.message) || "Pool creation failed";
+    if (err && err.detail && err.detail.violations) {
+      txt = err.detail.message;
+    }
+    setManageMsg(poolCreateMsg, txt, false);
     setStatus("Disconnected", false);
   });
 }
@@ -1682,8 +1860,21 @@ poolCreateForm.addEventListener("submit", createPool);
 teacherPoolList.addEventListener("click", onTeacherPoolClick);
 poolRefreshBtn.addEventListener("click", function() {
   loadTeacherPools();
-  loadPoolTemplate();
+  loadFlavors();
+  loadQuota();
 });
+
+// Live estimate as the teacher edits the form.
+var tpFlavorEl = document.getElementById("tp-flavor");
+if (tpFlavorEl) tpFlavorEl.addEventListener("change", updateEstimate);
+tpCount.addEventListener("input", updateEstimate);
+var quotaRefreshBtn = document.getElementById("quota-refresh");
+if (quotaRefreshBtn) {
+  quotaRefreshBtn.addEventListener("click", function() {
+    loadQuota();
+    loadFlavors();
+  });
+}
 
 // Window resize — covers drag-resize
 window.addEventListener("resize", onViewportResize);

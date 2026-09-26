@@ -75,3 +75,33 @@ TEACHER_VM_COUNT_LIMIT   = int(os.getenv("TEACHER_VM_COUNT_LIMIT", "40"))
 TEACHER_FALLBACK_VCPUS   = int(os.getenv("TEACHER_FALLBACK_VCPUS",   "2"))
 TEACHER_FALLBACK_RAM_MB  = int(os.getenv("TEACHER_FALLBACK_RAM_MB",  "4096"))
 TEACHER_FALLBACK_DISK_GB = int(os.getenv("TEACHER_FALLBACK_DISK_GB", "20"))
+
+#Class-pool volume sizing for the teacher picker. The volume size chosen here
+#becomes the VM's root disk (job_worker uses block_device_mapping_v2), so it
+#is independent of the flavor's declared disk.
+TEACHER_MIN_VOLUME_GB = int(os.getenv("TEACHER_MIN_VOLUME_GB", "10"))
+TEACHER_MAX_VOLUME_GB = int(os.getenv("TEACHER_MAX_VOLUME_GB", "100"))
+
+#Smallest flavor offered in the teacher picker. The catalog contains a
+#256 MB / 1 vCPU flavor (m1.extra_tiny) that cannot run an XFCE desktop —
+#offering it would produce a VM that boots but is unusable.
+TEACHER_MIN_FLAVOR_VCPUS = int(os.getenv("TEACHER_MIN_FLAVOR_VCPUS", "2"))
+TEACHER_MIN_FLAVOR_RAM_MB = int(os.getenv("TEACHER_MIN_FLAVOR_RAM_MB", "2048"))
+
+#Project quota — the shared BUET Cloud Lab allocation.
+#OpenStack enforces these; quota_service.py reads LIVE usage from the cloud so
+#the API can refuse an over-quota request before dispatching provisioning jobs.
+#These values are only used as a fallback when the cloud figures are unreadable.
+QUOTA_MAX_VCPUS      = int(os.getenv("QUOTA_MAX_VCPUS",      "20"))
+QUOTA_MAX_RAM_MB     = int(os.getenv("QUOTA_MAX_RAM_MB",     str(50 * 1024)))
+QUOTA_MAX_VOLUMES    = int(os.getenv("QUOTA_MAX_VOLUMES",    "10"))
+QUOTA_MAX_STORAGE_GB = int(os.getenv("QUOTA_MAX_STORAGE_GB", "1000"))
+
+#Capacity withheld from TEACHERS so a class pool can never consume the whole
+#project and starve the student walk-in pool. Sized for the student pool's
+#min_vms at the reference flavor (2 x m1.medium = 4 vCPU / 4096 MB), plus
+#volume/storage slack for replenishment churn.
+STUDENT_POOL_RESERVE_VCPUS      = int(os.getenv("STUDENT_POOL_RESERVE_VCPUS",      "4"))
+STUDENT_POOL_RESERVE_RAM_MB     = int(os.getenv("STUDENT_POOL_RESERVE_RAM_MB",     str(4 * 1024)))
+STUDENT_POOL_RESERVE_VOLUMES    = int(os.getenv("STUDENT_POOL_RESERVE_VOLUMES",    "2"))
+STUDENT_POOL_RESERVE_STORAGE_GB = int(os.getenv("STUDENT_POOL_RESERVE_STORAGE_GB", "20"))

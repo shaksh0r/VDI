@@ -11,6 +11,148 @@
 </head>
 <body>
 
+  <!-- ════════════════════════════════════════════════════════════════
+       AUTH PAGE — full-screen, replaces the entire workspace.
+       Separate from .shell so it is a real page, not a card floating
+       over the RDP viewport. Visibility is driven by setView().
+  ═════════════════════════════════════════════════════════════════ -->
+  <div class="authpage" id="authpage">
+
+    <!-- Left: brand / value panel (hidden on narrow screens) -->
+    <aside class="authpage__aside">
+      <div class="authpage__aside-inner">
+        <div class="authpage__brand">
+          <div class="authpage__mark">
+            <svg width="22" height="22" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor" opacity="0.9"/>
+              <rect x="9" y="1" width="6" height="6" rx="1" fill="currentColor" opacity="0.5"/>
+              <rect x="1" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.5"/>
+              <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" opacity="0.25"/>
+            </svg>
+          </div>
+          <div>
+            <p class="authpage__wordmark">VDI Mirror</p>
+            <p class="authpage__tagline">Virtual Desktop Infrastructure</p>
+          </div>
+        </div>
+
+        <ul class="authpage__points">
+          <li>
+            <span class="authpage__point-key">Stream</span>
+            <span class="authpage__point-val">A full Linux desktop in your browser, over RDP</span>
+          </li>
+          <li>
+            <span class="authpage__point-key">Class labs</span>
+            <span class="authpage__point-val">Join with the access code your teacher gives you</span>
+          </li>
+          <li>
+            <span class="authpage__point-key">Walk in</span>
+            <span class="authpage__point-val">No code? Claim a free VM from the student pool</span>
+          </li>
+        </ul>
+
+        <p class="authpage__aside-foot">
+          Sessions are time-limited and VMs are recycled automatically.
+        </p>
+      </div>
+    </aside>
+
+    <!-- Right: the form column -->
+    <main class="authpage__main">
+      <div class="authpage__panel">
+
+        <!-- ── Sign in ─────────────────────────────────────────────── -->
+        <section class="authcard" id="login">
+          <header class="authcard__head">
+            <h1 class="authcard__title">Sign in</h1>
+            <p class="authcard__sub">Use your university VDI account</p>
+          </header>
+
+          <form class="authcard__form" id="login-form">
+            <label class="field">
+              <span class="field__label">Username</span>
+              <input id="login-username" type="text" placeholder="e.g. 2024001"
+                     autocomplete="username" autocapitalize="none" required />
+            </label>
+            <label class="field">
+              <span class="field__label">Password</span>
+              <input id="login-password" type="password" placeholder="Your password"
+                     autocomplete="current-password" required />
+            </label>
+            <button type="submit" class="btn btn--connect btn--block">Sign in</button>
+          </form>
+
+          <p class="authcard__msg" id="login-error"></p>
+
+          <p class="authcard__switch">
+            Don't have an account?
+            <button type="button" class="authcard__switch-btn" id="show-signup">Create one</button>
+          </p>
+        </section>
+
+        <!-- ── Create account (student self-registration) ───────────── -->
+        <section class="authcard" id="signup" hidden>
+          <header class="authcard__head">
+            <h1 class="authcard__title">Create your account</h1>
+            <p class="authcard__sub">Student self-registration</p>
+          </header>
+
+          <form class="authcard__form" id="signup-form">
+            <label class="field">
+              <span class="field__label">Full name</span>
+              <input id="reg-name" type="text" placeholder="e.g. Sadik Rahman"
+                     autocomplete="name" required />
+            </label>
+            <label class="field">
+              <span class="field__label">Email</span>
+              <input id="reg-email" type="email" placeholder="you@example.com"
+                     autocomplete="email" autocapitalize="none" required />
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span class="field__label">Student ID</span>
+                <input id="reg-sid" type="text" placeholder="2024001" required />
+              </label>
+              <label class="field">
+                <span class="field__label">Department</span>
+                <input id="reg-dept" type="text" placeholder="CSE" required />
+              </label>
+            </div>
+            <label class="field">
+              <span class="field__label">Username</span>
+              <input id="reg-username" type="text" placeholder="Choose a username"
+                     autocomplete="username" autocapitalize="none" required />
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span class="field__label">Password</span>
+                <input id="reg-password" type="password" placeholder="Min 8 characters"
+                       autocomplete="new-password" required />
+              </label>
+              <label class="field">
+                <span class="field__label">Confirm</span>
+                <input id="reg-password2" type="password" placeholder="Repeat password"
+                       autocomplete="new-password" required />
+              </label>
+            </div>
+            <button type="submit" class="btn btn--connect btn--block">Create account</button>
+          </form>
+
+          <p class="authcard__msg" id="signup-error"></p>
+
+          <p class="authcard__switch">
+            Already have an account?
+            <button type="button" class="authcard__switch-btn" id="show-login">Sign in</button>
+          </p>
+        </section>
+
+      </div>
+
+      <p class="authpage__foot">VDI Mirror 1.1.0 — BUET Cloud Lab</p>
+    </main>
+
+  </div>
+
   <div class="shell">
 
     <!-- ════════════════════════════════════════════════════
@@ -93,52 +235,6 @@
     <main class="viewport" id="viewport">
 
       <!-- Auth state — shown when not signed in (visibility via setView) -->
-      <div class="login-state" id="login">
-        <div class="login-state__card">
-          <p class="login-state__heading">Sign in to VDI</p>
-          <form class="login-state__form" id="login-form">
-            <input id="login-username" type="text" placeholder="Username"
-                   autocomplete="username" autocapitalize="none" required />
-            <input id="login-password" type="password" placeholder="Password"
-                   autocomplete="current-password" required />
-            <button type="submit" class="btn btn--connect">Sign in</button>
-          </form>
-          <p class="login-state__error" id="login-error"></p>
-          <p class="auth-switch">
-            Don't have an account?
-            <button type="button" class="auth-switch__btn" id="show-signup">Create one</button>
-          </p>
-        </div>
-      </div>
-
-      <!-- Signup state — student self-registration (toggled from login) -->
-      <div class="login-state" id="signup" style="display: none;">
-        <div class="login-state__card login-state__card--wide">
-          <p class="login-state__heading">Create your account</p>
-          <form class="login-state__form" id="signup-form">
-            <input id="reg-name" type="text" placeholder="Full name"
-                   autocomplete="name" required />
-            <input id="reg-email" type="email" placeholder="Email"
-                   autocomplete="email" autocapitalize="none" required />
-            <div class="form-row">
-              <input id="reg-sid" type="text" placeholder="Student ID" required />
-              <input id="reg-dept" type="text" placeholder="Department" required />
-            </div>
-            <input id="reg-username" type="text" placeholder="Username"
-                   autocomplete="username" autocapitalize="none" required />
-            <input id="reg-password" type="password" placeholder="Password (min 8 chars)"
-                   autocomplete="new-password" required />
-            <input id="reg-password2" type="password" placeholder="Confirm password"
-                   autocomplete="new-password" required />
-            <button type="submit" class="btn btn--connect">Create account</button>
-          </form>
-          <p class="login-state__error" id="signup-error"></p>
-          <p class="auth-switch">
-            Already have an account?
-            <button type="button" class="auth-switch__btn" id="show-login">Sign in</button>
-          </p>
-        </div>
-      </div>
 
       <!-- Admin state — full admin console (role 'admin' only) -->
       <div class="manage-state" id="admin-pane" style="display: none;">
@@ -213,35 +309,62 @@
             <form class="login-state__form" id="pool-create-form">
               <input id="tp-name" type="text" placeholder="Class pool name (e.g. cse450-lab1)"
                      autocomplete="off" required />
-              <input id="tp-count" type="number" min="1" max="40" step="1"
-                     placeholder="Number of VMs" required />
-              <div class="spec-card">
-                <p class="spec-card__title">Fixed VM specification</p>
+
+              <!-- VM size: flavor drives CPU + RAM. Disk is fixed by the
+                   platform (see docs/openstack-resources.md). -->
+              <label class="field-inline">
+                <span class="field-inline__label">VM size</span>
+                <select id="tp-flavor" required></select>
+              </label>
+
+              <label class="field-inline">
+                <span class="field-inline__label">Number of VMs</span>
+                <input id="tp-count" type="number" min="1" max="40" step="1"
+                       placeholder="e.g. 10" required />
+              </label>
+
+              <!-- Live estimate against project quota -->
+              <div class="spec-card" id="tp-estimate">
+                <p class="spec-card__title">This pool will use</p>
                 <div class="spec-row">
                   <span class="spec-row__key">vCPUs</span>
-                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-vcpus">…</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-need-vcpus">—</span>
                 </div>
                 <div class="spec-row">
                   <span class="spec-row__key">RAM</span>
-                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-ram">…</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-need-ram">—</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-row__key">Volumes</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-need-vols">—</span>
                 </div>
                 <div class="spec-row">
                   <span class="spec-row__key">Boot disk</span>
-                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-disk">…</span>
+                  <span class="spec-row__val spec-row__val--mono" id="tp-need-disk">—</span>
                 </div>
-                <div class="spec-row">
-                  <span class="spec-row__key">Lifecycle</span>
-                  <span class="spec-row__val">Reserved — VM survives disconnects until you tear the class down</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-row__key">Session limit</span>
-                  <span class="spec-row__val spec-row__val--mono" id="tp-spec-session">…</span>
-                </div>
-                <p class="spec-card__note">Configuration is fixed and cannot be changed.</p>
+                <p class="spec-card__note" id="tp-estimate-note">
+                  Checked against live project quota before anything is created.
+                </p>
               </div>
-              <button type="submit" class="btn btn--connect">Create pool &amp; provision VMs</button>
+
+              <button type="submit" class="btn btn--connect" id="tp-submit">
+                Create pool &amp; provision VMs
+              </button>
             </form>
             <p class="manage-msg" id="pool-create-msg"></p>
+          </div>
+
+          <div class="manage-card">
+            <div class="manage-card__head">
+              <p class="manage-card__title">Project capacity</p>
+              <button type="button" class="btn btn--ghost" id="quota-refresh">Refresh</button>
+            </div>
+            <p class="form-hint">
+              Shared across every pool. The amount reserved for the student
+              walk-in pool is already excluded from what you can allocate.
+            </p>
+            <div class="quota-list" id="quota-list"></div>
+            <p class="manage-msg" id="quota-msg"></p>
           </div>
 
           <div class="manage-card">
