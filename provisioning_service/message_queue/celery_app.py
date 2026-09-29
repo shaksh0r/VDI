@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_ready
 
 from .. import config
 
@@ -26,3 +27,31 @@ app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
 )
+
+
+@worker_ready.connect
+def _sweep_orphans_on_startup(sender=None, **_kwargs):
+    """Run the orphan sweep as soon as a worker boots.
+
+    The beat schedule alone is not enough for the `docker compose down -v`
+    case: Celery beat aligns to a fixed wall-clock interval, so after `up`
+    the first reconcile can be up to RECONCILE_INTERVAL_SECONDS away, and
+    leaked VMs keep consuming quota in the meantime. Dispatching here means
+    untracked VMs from a previous run are destroyed within seconds of the
+    stack coming up, with the periodic beat remaining the ongoing safety net
+    for leaks that appear later.
+
+    Sent as a task rather than run inline so the worker never blocks during
+    startup, and so it lands on whichever worker is ready first (multiple
+    replicas would otherwise each sweep concurrently).
+    """
+    try:
+        app.send_task(
+            "provisioning_service.services.reconciler.reconcile_instances_task"
+        )
+        sender.logger.info(
+            "startup orphan sweep dispatched (periodic interval=%ss)",
+            config.RECONCILE_INTERVAL_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — never block worker startup
+        sender.logger.warning("startup orphan sweep dispatch failed: %s", exc)

@@ -1,3 +1,4 @@
+from .. import config
 from .celery_app import app
 
 app.conf.beat_schedule = {
@@ -12,8 +13,10 @@ app.conf.beat_schedule = {
     # Sweep OpenStack for VMs this service created that the database no longer
     # tracks (e.g. after `docker compose down -v`). Without this, every DB
     # reset leaks a full pool of running VMs and then provisions min_vms more.
+    # Interval is configurable — a shorter window means leaked VMs are
+    # reclaimed sooner, at the cost of more OpenStack API calls.
     "reconcile-instances": {
         "task": "provisioning_service.services.reconciler.reconcile_instances_task",
-        "schedule": 300.0,
+        "schedule": float(config.RECONCILE_INTERVAL_SECONDS),
     },
 }

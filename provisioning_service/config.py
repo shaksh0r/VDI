@@ -42,6 +42,10 @@ CLAIM_QUEUE_POLL_INTERVAL_SECONDS = int(os.getenv("CLAIM_QUEUE_POLL_INTERVAL_SEC
 
 #Intervals & timeouts
 RECONCILIATION_INTERVAL_SECONDS = int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30"))
+# How often the orphan sweeper compares OpenStack against the database. A
+# leaked VM (e.g. left behind by `docker compose down -v`) is destroyed
+# within this window after startup. Lower = faster reclaim, more API calls.
+RECONCILE_INTERVAL_SECONDS      = int(os.getenv("RECONCILE_INTERVAL_SECONDS",      "120"))
 JOB_POLL_INTERVAL_SECONDS       = int(os.getenv("JOB_POLL_INTERVAL_SECONDS",       "5"))
 VM_CREATION_POLL_INTERVAL       = int(os.getenv("VM_CREATION_POLL_INTERVAL",       "10"))
 VM_CREATION_TIMEOUT_SECONDS     = int(os.getenv("VM_CREATION_TIMEOUT_SECONDS",     "300"))
