@@ -1,7 +1,11 @@
+import logging
+
 from celery import Celery
 from celery.signals import worker_ready
 
 from .. import config
+
+logger = logging.getLogger(__name__)
 
 app = Celery(
     "provisioning_service",
@@ -42,16 +46,20 @@ def _sweep_orphans_on_startup(sender=None, **_kwargs):
     for leaks that appear later.
 
     Sent as a task rather than run inline so the worker never blocks during
-    startup, and so it lands on whichever worker is ready first (multiple
-    replicas would otherwise each sweep concurrently).
+    startup.
+
+    NOTE: `sender` is a Celery Consumer, which has no `.logger` attribute —
+    logging there raises AttributeError inside the signal handler and the
+    traceback is swallowed by celery's dispatch machinery. Use this module's
+    own logger instead.
     """
     try:
         app.send_task(
             "provisioning_service.services.reconciler.reconcile_instances_task"
         )
-        sender.logger.info(
+        logger.info(
             "startup orphan sweep dispatched (periodic interval=%ss)",
             config.RECONCILE_INTERVAL_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 — never block worker startup
-        sender.logger.warning("startup orphan sweep dispatch failed: %s", exc)
+        logger.warning("startup orphan sweep dispatch failed: %s", exc)
